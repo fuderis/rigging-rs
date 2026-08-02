@@ -8,7 +8,6 @@ pub use style::*;
 #[cfg(feature = "highlight")]
 pub mod theme;
 
-pub use clap::{self, Args, Command, Parser, Subcommand};
 pub use crossterm::{
     self,
     style::{Color, Stylize},
