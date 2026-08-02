@@ -5,7 +5,7 @@ use crate::{
 use crossterm::event::{KeyCode, KeyEvent};
 use crossterm::style::{Color, Stylize};
 use std::sync::{
-    Arc, Mutex,
+    Arc, RwLock,
     atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::{Notify, mpsc};
@@ -46,11 +46,11 @@ pub struct Text {
     /// The static prefix specified during creation (for example, "Upload: ").
     pub(crate) static_prefix: String,
     /// Shared text state rendered next to the spinner.
-    pub(crate) state: Arc<Mutex<String>>,
+    pub(crate) state: Arc<RwLock<String>>,
     /// Flag indicating whether the underlying asynchronous task has finished or if no task is attached.
-    pub(crate) is_done: Arc<Mutex<bool>>,
+    pub(crate) is_done: Arc<RwLock<bool>>,
     /// Current index within the spinner frame array.
-    pub(crate) frame_idx: Arc<Mutex<usize>>,
+    pub(crate) frame_idx: Arc<RwLock<usize>>,
     /// Notification handle used to signal completion to dynamic renderers.
     pub(crate) notify: Arc<Notify>,
     /// Visual style of the spinner animation.
@@ -68,7 +68,7 @@ pub struct Text {
     pub(crate) prefix_stripe_color: Option<Color>,
 
     /// Current vertical scroll offset when content exceeds available height.
-    pub(crate) scroll_offset: Arc<Mutex<usize>>,
+    pub(crate) scroll_offset: Arc<RwLock<usize>>,
 
     /// Atomic flag indicating content mutations to skip redundant redraws.
     pub(crate) is_changed: Arc<AtomicBool>,
@@ -83,10 +83,10 @@ impl Text {
     pub fn new(static_prefix: impl Into<String>) -> Block<Self> {
         let static_prefix = static_prefix.into();
         let state = Default::default();
-        let is_done = Arc::new(Mutex::new(true));
-        let frame_idx = Arc::new(Mutex::new(0));
+        let is_done = Arc::new(RwLock::new(true));
+        let frame_idx = Arc::new(RwLock::new(0));
         let notify = Arc::new(Notify::new());
-        let scroll_offset = Arc::new(Mutex::new(0));
+        let scroll_offset = Arc::new(RwLock::new(0));
 
         notify.notify_one();
 
@@ -147,7 +147,7 @@ impl Block<Text> {
     {
         self.inner.notify = Arc::new(Notify::new());
 
-        if let Ok(mut lock) = self.inner.is_done.lock() {
+        if let Ok(mut lock) = self.inner.is_done.write() {
             *lock = false;
         }
 
@@ -165,12 +165,12 @@ impl Block<Text> {
 
         tokio::spawn(async move {
             while let Some(new_text) = rx.recv().await {
-                if let Ok(mut lock) = state_writer.lock() {
+                if let Ok(mut lock) = state_writer.write() {
                     *lock = new_text;
                     is_changed_writer.store(true, Ordering::Release);
                 }
             }
-            if let Ok(mut lock) = is_done_writer.lock() {
+            if let Ok(mut lock) = is_done_writer.write() {
                 *lock = true;
                 is_changed_writer.store(true, Ordering::Release);
             }
@@ -262,8 +262,8 @@ impl Widget for Text {
             return true;
         }
 
-        // 2. If spinner is active — a frame is required to advance frame_idx
-        let is_done = *self.is_done.lock().unwrap_or_else(|e| e.into_inner());
+        // 2. If spinner is active — a frame is required to advance frame_idx (используем read-блокировку)
+        let is_done = *self.is_done.read().unwrap_or_else(|e| e.into_inner());
         !is_done && self.spinner_style != SpinnerStyle::None
     }
 
@@ -281,12 +281,12 @@ impl Widget for Text {
         // Reset change flag during actual rendering
         self.is_changed.store(false, Ordering::Release);
 
-        let is_done = *self.is_done.lock().unwrap_or_else(|e| e.into_inner());
+        let is_done = *self.is_done.read().unwrap_or_else(|e| e.into_inner());
         let spinner_active = !is_done && self.spinner_style != SpinnerStyle::None;
 
         let raw_dynamic_text = self
             .state
-            .lock()
+            .read()
             .map(|s| s.clone())
             .unwrap_or_else(|e| e.into_inner().clone());
 
@@ -296,7 +296,7 @@ impl Widget for Text {
             if frames.is_empty() {
                 String::new()
             } else {
-                let mut frame_idx = self.frame_idx.lock().unwrap_or_else(|e| e.into_inner());
+                let mut frame_idx = self.frame_idx.write().unwrap_or_else(|e| e.into_inner());
                 let raw_icon = frames[*frame_idx % frames.len()];
                 *frame_idx = frame_idx.wrapping_add(1);
 
@@ -491,7 +491,10 @@ impl Widget for Text {
 
     /// processes keyboard navigation events for scrolling the content.
     fn handle_key(&mut self, key: KeyEvent) {
-        let mut scroll = self.scroll_offset.lock().unwrap_or_else(|e| e.into_inner());
+        let mut scroll = self
+            .scroll_offset
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         let mut moved = false;
 
         match key.code {
@@ -525,13 +528,13 @@ impl Widget for Text {
 
     /// returns whether the background execution task has completed.
     fn is_finished(&self) -> bool {
-        *self.is_done.lock().unwrap_or_else(|e| e.into_inner())
+        *self.is_done.read().unwrap_or_else(|e| e.into_inner())
     }
 
     /// extracts the final string payload stored inside the widget.
     fn extract_output(self) -> Self::Output {
         self.state
-            .lock()
+            .read()
             .map(|s| s.clone())
             .unwrap_or_else(|e| e.into_inner().clone())
     }

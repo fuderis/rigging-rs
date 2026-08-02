@@ -18,17 +18,22 @@ precise frame re-rendering, code syntax highlighting, and user input handling.
 * **Markdown Support (`feature = "markdown"`)**: Automatic parsing and formatting for lists, tables, blockquotes, headers, and code blocks.
 
 * **Syntax Highlighting (`feature = "highlight"`)**: Code highlighting inside Markdown code blocks powered by **Tree-sitter**,
-  featuring customizable `CodeTheme` structures and preset themes.
+    featuring customizable `CodeTheme` structures and preset themes.
+
+* **Unicode & ANSI Aware Layout Engine**:
+  * **Accurate Layouting (`unicode-width`)**: Calculates display width based on visual grapheme clusters rather than byte/character counts,
+    preventing UI breaking on wide characters, CJK scripts, and multi-byte Emojis.
+  * **Stateful ANSI Wrapping**: Dynamically tracks and carries over active SGR (ANSI escape code) styles across line wraps and frame boundaries,
+    ensuring visual continuity without bleeding background colors or breaking reset states.
 
 * **Smart Viewport Management**: When content exceeds the terminal height, only the latest (most relevant) lines are rendered during execution.
-  Once finished (`is_finished() == true`), the widget expands and prints completely to prevent artifacts.
+    Once finished (`is_finished() == true`), the widget expands and prints completely to prevent artifacts.
 
 * **Optimization and Caching**: ANSI frame caching and frame re-rendering triggered strictly on changes (`is_changed() == true`).
 
 * **Precise Cursor Positioning**: Accurate calculation of relative `(col, row)` cursor coordinates taking into account all borders, padding (`Padding`, `Margin`), and titles.
 
 * **RAII Safety (`TerminalGuard`)**: Guaranteed Raw Mode reset and restoration of original terminal settings on exit or panic.
-
 
 ## Cargo Features
 
@@ -132,10 +137,12 @@ pub struct CodeTheme {
   If output exceeds screen height, the view automatically scrolls to display the **latest lines**.
 
 2. **Final Expansion**: When a widget completes its execution (`is_finished() == true`), height constraints are removed (`max_height = None`),
-  the temporary dynamic frame is cleared, and the complete widget content is printed into the terminal stream.
-  This eliminates truncated artifacts in terminal scrollback history.
+  the temporary dynamic frame is cleared, and the complete widget content is printed into the terminal stream. This eliminates truncated artifacts in terminal scrollback history.
 
-3. **Resize Handling**: On terminal window resize events (`Event::Resize`), border caches are cleared, previous frames are wiped,
+3. **ANSI & Unicode Line Wrapping**: During line wrapping, active ANSI formatting sequence states are preserved and automatically prepended to line continuations.
+  Visual character widths are computed via `unicode-width` to guarantee exact alignment regardless of Emojis or wide characters.
+
+4. **Resize Handling**: On terminal window resize events (`Event::Resize`), border caches are cleared, previous frames are wiped,
   and cursor positions are reset to ensure a clean re-render under new dimensions.
 
 ## Complete Example: AI CLI Chat
@@ -222,7 +229,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .border(BorderStyle::Rounded)
             .border_color(BRAND_COLOR)
             .background(BG_COLOR)
-            .padding(Padding::gor(1))
+            .padding(Padding::hor(1))
             .multiline(true)
             .clear_after(true)
             .render()
@@ -250,7 +257,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .border(BorderStyle::Rounded)
             .border_color(BRAND_COLOR)
             .background(BG_COLOR)
-            .padding(Padding::gor(1))
+            .padding(Padding::hor(1))
             .handler(|handle| async move {
                 let steps = [
                     "Parsing markdown syntax tree...",
@@ -289,7 +296,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .border(BorderStyle::Rounded)
         .border_color(ALT_COLOR)
         .background(BG_COLOR)
-        .padding(Padding::gor(1))
+        .padding(Padding::hor(1))
         .margin(Margin {
             bottom: 1,
             ..Default::default()
