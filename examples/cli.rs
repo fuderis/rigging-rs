@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .border(BorderStyle::Rounded)
             .border_color(BRAND_COLOR)
             .background(BG_COLOR)
-            .padding(Padding::gor(1))
+            .padding(Padding::hor(1))
             .multiline(true)
             .clear_after(true)
             .render()
@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             .border(BorderStyle::Rounded)
             .border_color(BRAND_COLOR)
             .background(BG_COLOR)
-            .padding(Padding::gor(1))
+            .padding(Padding::hor(1))
             .handler(|handle| async move {
                 let steps = [
                     "Parsing markdown syntax tree...",
@@ -146,7 +146,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .border(BorderStyle::Rounded)
         .border_color(ALT_COLOR)
         .background(BG_COLOR)
-        .padding(Padding::gor(1))
+        .padding(Padding::hor(1))
         .margin(Margin {
             bottom: 1,
             ..Default::default()

@@ -37,7 +37,7 @@ impl Padding {
     }
 
     /// Creates horizontal padding with equal `left` and `right` values, setting vertical padding to zero.
-    pub fn gor(indent: usize) -> Self {
+    pub fn hor(indent: usize) -> Self {
         Self::new(0, indent, 0, indent)
     }
 
@@ -96,7 +96,7 @@ impl Margin {
     }
 
     /// Creates horizontal margin with equal `left` and `right` values, setting vertical margin to zero.
-    pub fn gor(indent: usize) -> Self {
+    pub fn hor(indent: usize) -> Self {
         Self::new(0, indent, 0, indent)
     }
 
