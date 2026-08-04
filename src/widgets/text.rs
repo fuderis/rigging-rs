@@ -62,10 +62,8 @@ pub struct Text {
     pub(crate) prefix_stripe: StripeStyle,
     /// Visual style of the horizontal line underneath the prefix.
     pub(crate) prefix_line: LineStyle,
-    /// Optional color applied to the prefix underline.
+    /// Optional color applied to the prefix vertical stripe & underline.
     pub(crate) prefix_color: Option<Color>,
-    /// Optional color applied to the prefix vertical stripe.
-    pub(crate) prefix_stripe_color: Option<Color>,
 
     /// Current vertical scroll offset when content exceeds available height.
     pub(crate) scroll_offset: Arc<RwLock<usize>>,
@@ -102,7 +100,6 @@ impl Text {
             prefix_stripe: StripeStyle::None,
             prefix_line: LineStyle::default(),
             prefix_color: None,
-            prefix_stripe_color: None,
 
             scroll_offset,
 
@@ -130,12 +127,6 @@ impl Block<Text> {
     /// sets the color of the horizontal separator line underneath the prefix.
     pub fn prefix_color(mut self, color: Color) -> Self {
         self.inner.prefix_color = Some(color);
-        self
-    }
-
-    /// sets the color of the vertical side stripe next to the prefix.
-    pub fn prefix_stripe_color(mut self, color: Color) -> Self {
-        self.inner.prefix_stripe_color = Some(color);
         self
     }
 
@@ -262,7 +253,7 @@ impl Widget for Text {
             return true;
         }
 
-        // 2. If spinner is active — a frame is required to advance frame_idx (используем read-блокировку)
+        // 2. If spinner is active — a frame is required to advance frame_idx
         let is_done = *self.is_done.read().unwrap_or_else(|e| e.into_inner());
         !is_done && self.spinner_style != SpinnerStyle::None
     }
@@ -324,7 +315,7 @@ impl Widget for Text {
             let sideline_prefix = if let Some(ch) = stripe_char {
                 let s = format!("{} ", ch);
                 let color = self
-                    .prefix_stripe_color
+                    .prefix_color
                     .or(self.prefix_color)
                     .or(self.spinner_color);
                 if let Some(c) = color {
@@ -340,45 +331,59 @@ impl Widget for Text {
             let available_prefix_width = width.saturating_sub(sideline_w);
 
             if available_prefix_width > 0 {
-                let normalized_prefix = self
-                    .static_prefix
-                    .replace("\r\n", "\n")
-                    .replace('\r', "\n")
-                    .replace('\t', "    ");
-
-                let prefix_raw_lines: Vec<&str> = normalized_prefix.split('\n').collect();
-                let mut active_ansi = String::new();
-
-                for prefix_line_str in prefix_raw_lines {
-                    if prefix_line_str.is_empty() {
-                        let full_line = format!("{}{}", sideline_prefix, active_ansi);
-                        let vis_w = ansi::visible_width(&full_line);
-                        if vis_w > prefix_max_width {
-                            prefix_max_width = vis_w;
-                        }
-                        lines.push(full_line);
+                #[cfg(feature = "markdown")]
+                let prefix_lines: Vec<String> = {
+                    let rendered = self
+                        .markdown
+                        .render(&self.static_prefix, available_prefix_width);
+                    let trimmed = rendered.trim_end_matches(|c| c == '\r' || c == '\n');
+                    if trimmed.is_empty() {
+                        Vec::new()
                     } else {
-                        let line_with_color = format!("{}{}", active_ansi, prefix_line_str);
-                        let wrapped =
-                            ansi::wrap_terminal_text(&line_with_color, available_prefix_width);
+                        trimmed.lines().map(|s| s.to_string()).collect()
+                    }
+                };
 
-                        if let Some(last_line) = wrapped.last() {
-                            if let Some(color) = ansi::get_active_text_color(last_line) {
-                                active_ansi = color;
-                            } else {
-                                active_ansi.clear();
-                            }
-                        }
+                #[cfg(not(feature = "markdown"))]
+                let prefix_lines: Vec<String> = {
+                    let normalized_prefix = self
+                        .static_prefix
+                        .replace("\r\n", "\n")
+                        .replace('\r', "\n")
+                        .replace('\t', "    ");
 
-                        for w_line in wrapped {
-                            let full_line = format!("{}{}", sideline_prefix, w_line);
-                            let vis_w = ansi::visible_width(&full_line);
-                            if vis_w > prefix_max_width {
-                                prefix_max_width = vis_w;
+                    let prefix_raw_lines: Vec<&str> = normalized_prefix.split('\n').collect();
+                    let mut acc = Vec::new();
+                    let mut active_ansi = String::new();
+
+                    for prefix_line_str in prefix_raw_lines {
+                        if prefix_line_str.is_empty() {
+                            acc.push(active_ansi.clone());
+                        } else {
+                            let line_with_color = format!("{}{}", active_ansi, prefix_line_str);
+                            let wrapped =
+                                ansi::wrap_terminal_text(&line_with_color, available_prefix_width);
+
+                            if let Some(last_line) = wrapped.last() {
+                                if let Some(color) = ansi::get_active_text_color(last_line) {
+                                    active_ansi = color;
+                                } else {
+                                    active_ansi.clear();
+                                }
                             }
-                            lines.push(full_line);
+                            acc.extend(wrapped);
                         }
                     }
+                    acc
+                };
+
+                for p_line in prefix_lines {
+                    let full_line = format!("{}{}\x1b[0m", sideline_prefix, p_line);
+                    let vis_w = ansi::visible_width(&full_line);
+                    if vis_w > prefix_max_width {
+                        prefix_max_width = vis_w;
+                    }
+                    lines.push(full_line);
                 }
             }
         }
@@ -396,7 +401,7 @@ impl Widget for Text {
                 let sideline_prefix = if let Some(ch) = stripe_char {
                     let s = format!("{} ", ch);
                     let color = self
-                        .prefix_stripe_color
+                        .prefix_color
                         .or(self.prefix_color)
                         .or(self.spinner_color);
                     if let Some(c) = color {
