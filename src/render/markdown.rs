@@ -118,7 +118,7 @@ impl Markdown {
                 let inner = p
                     .children
                     .iter()
-                    .map(|child| self.render_node(child, max_width, indent))
+                    .map(|child| self.render_node(child, max_width, ""))
                     .collect::<String>();
 
                 let wrapped_lines = ansi::wrap_terminal_text(&inner, max_width);
@@ -250,8 +250,8 @@ impl Markdown {
                         let prefix_w = ansi::visible_width(&raw_prefix);
                         let inner_width = max_width.saturating_sub(prefix_w);
 
-                        // Add exactly 2 spaces to the parent's current indent
-                        let child_indent = format!("{}  ", indent);
+                        // Чистые обычные пробелы для отступа дочерних элементов:
+                        let child_indent = format!("{}{}", indent, " ".repeat(prefix_w));
 
                         let item_str = match child {
                             Node::ListItem(li) => li

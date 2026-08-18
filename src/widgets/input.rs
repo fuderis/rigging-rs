@@ -1,51 +1,68 @@
 use crate::render::{block::Block, widget::Widget};
-
+#[cfg(feature = "buffer")]
+use atoman::prelude::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+#[cfg(feature = "buffer")]
+use std::{collections::HashMap, sync::Arc};
 use std::{
     fmt::Display,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use unicode_width::UnicodeWidthStr;
 
-/// A terminal text input component supporting single-line and multi-line modes,
-/// horizontal/vertical scrolling, masking for passwords, and custom key bindings.
+/// Global storage for command histories separated by buffer ID (`u64`).
+#[cfg(feature = "buffer")]
+static COMMAND_HISTORIES: State<HashMap<u64, Vec<Arc<String>>>> = State::new(HashMap::new);
+
+/// A text input widget supporting single-line and multi-line modes, secret masking,
+/// scrolling, and command history buffers.
 pub struct Input {
-    /// Default fallback value returned when input is empty.
+    /// Default fallback value returned if the input is empty on submit.
     default: Option<String>,
-    /// Placeholder text displayed when no input is provided.
+    /// Placeholder text rendered when the input buffer is empty.
     placeholder: Option<String>,
-    /// Mask input characters with asterisks if enabled.
+    /// Indicates whether character masking (asterisks) is active.
     secret: bool,
-    /// Enable multi-line input editing.
+    /// Indicates whether multi-line editing is enabled.
     multiline: bool,
-    /// Minimum height of the rendering viewport.
+    /// Minimum allowed height (in rows) for multi-line display.
     min_height: usize,
-    /// Maximum height of the rendering viewport.
+    /// Maximum allowed height (in rows) for multi-line display.
     max_height: usize,
 
-    /// Text lines stored as a vector of strings.
+    /// Text lines contained in the input field.
     pub(crate) lines: Vec<String>,
-    /// Zero-based active cursor line index.
+    /// Active line index of the cursor.
     pub(crate) cursor_line: usize,
-    /// Zero-based active cursor column index.
+    /// Active column position (in character count) of the cursor.
     pub(crate) cursor_col: usize,
 
-    /// Horizontal scroll offset tracking.
+    /// Horizontal scrolling offset (in characters).
     pub(crate) h_scroll: AtomicUsize,
-    /// Vertical scroll offset tracking.
+    /// Vertical scrolling offset (in lines).
     pub(crate) v_scroll: AtomicUsize,
 
-    /// State flag indicating input submission.
+    /// Indicates whether the input interaction has ended.
     finished: bool,
-    /// Flag indicating whether the widget's internal state was mutated.
+    /// Tracks if the widget state changed and requires re-rendering.
     is_changed: bool,
+
+    /// ID of the history buffer being used (`None` disables history).
+    #[cfg(feature = "buffer")]
+    buffer_id: Option<u64>,
+    /// Maximum limit of saved commands in history.
+    #[cfg(feature = "buffer")]
+    buffer_limit: Option<usize>,
+    /// Current index within the navigated command history.
+    #[cfg(feature = "buffer")]
+    history_idx: Option<usize>,
+    /// Draft of user input stored before navigating through history.
+    #[cfg(feature = "buffer")]
+    saved_draft: String,
 }
 
 impl Input {
-    /// Creates a new `Input` instance wrapped in a renderable [`Block`].
-    ///
-    /// # Returns
-    /// A configurable [`Block<Input>`] wrapper around the initialized input component.
+    /// Creates a new `Input` widget wrapped inside a [`Block`].
     pub fn new() -> Block<Self> {
         let input = Self {
             default: None,
@@ -61,17 +78,57 @@ impl Input {
             v_scroll: AtomicUsize::new(0),
             finished: false,
             is_changed: true,
+            #[cfg(feature = "buffer")]
+            buffer_id: None,
+            #[cfg(feature = "buffer")]
+            buffer_limit: None,
+            #[cfg(feature = "buffer")]
+            history_idx: None,
+            #[cfg(feature = "buffer")]
+            saved_draft: String::new(),
         };
 
         Block::new(input)
     }
 
-    /// Calculates the relative X position (column offset) of the cursor within the visible content area.
-    ///
-    /// Takes unicode character widths into account to properly handle multi-byte and wide characters.
-    ///
-    /// # Returns
-    /// The visible column index relative to the left edge of the input.
+    /// Clears the history buffer associated with the specified `id`.
+    #[cfg(feature = "buffer")]
+    pub fn remove_buffer(id: u64) {
+        let mut histories = COMMAND_HISTORIES.dirty_lock();
+        histories.remove(&id);
+    }
+
+    /// Saves current input to history if `buffer_id` is specified and string starts with `/`.
+    #[cfg(feature = "buffer")]
+    fn save_to_history(&self) {
+        let buffer_id = match self.buffer_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        let full_text = self.lines.join("\n");
+        let trimmed = full_text.trim();
+
+        if trimmed.starts_with('/') {
+            let mut histories = COMMAND_HISTORIES.dirty_lock();
+            let history = histories.entry(buffer_id).or_default();
+
+            // avoid consecutive duplicate entries
+            if history.last().map_or(true, |last| last.as_str() != trimmed) {
+                history.push(Arc::new(trimmed.to_string()));
+
+                // enforce capacity limits on history buffer
+                if let Some(limit) = self.buffer_limit {
+                    if limit > 0 && history.len() > limit {
+                        let drain_count = history.len() - limit;
+                        history.drain(0..drain_count);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns the relative visual X position of the cursor accounting for horizontal scroll and double-width characters.
     pub fn cursor_rel_x(&self) -> usize {
         let h_scroll = self.h_scroll.load(Ordering::Relaxed);
         if self.cursor_col <= h_scroll {
@@ -88,23 +145,20 @@ impl Input {
         UnicodeWidthStr::width(visible_chars.as_str())
     }
 
-    /// Calculates the relative Y position (row offset) of the cursor within the visible viewport.
-    ///
-    /// # Returns
-    /// The zero-based visible row index relative to the top of the input area.
+    /// Returns the relative visual Y position of the cursor relative to the vertical viewport scroll.
     pub fn cursor_rel_y(&self) -> usize {
         let v_scroll = self.v_scroll.load(Ordering::Relaxed);
         self.cursor_line.saturating_sub(v_scroll)
     }
 
-    /// adjusts horizontal and vertical viewport scroll offsets based on the current cursor position.
+    /// Adjusts horizontal and vertical scroll offsets based on cursor position and viewport dimensions.
     fn adjust_scroll(&self, visible_width: usize) {
         let mut v_scroll = self.v_scroll.load(Ordering::Relaxed);
         let h_scroll = self.h_scroll.load(Ordering::Relaxed);
 
         if self.cursor_line < v_scroll {
             v_scroll = self.cursor_line;
-        } else if self.cursor_line >= v_scroll + self.max_height {
+        } else if self.cursor_line >= self.max_height {
             v_scroll = self.cursor_line - self.max_height + 1;
         }
 
@@ -146,17 +200,14 @@ impl Input {
 impl Widget for Input {
     type Output = String;
 
-    /// checks if the input interaction is finished/submitted.
     fn is_finished(&self) -> bool {
         self.finished
     }
 
-    /// handles terminal window resize events by setting the redraw flag.
     fn on_resize(&mut self, _rows: u16, _cols: u16) {
         self.is_changed = true;
     }
 
-    /// extracts the final string result from the input, falling back to the default value if empty.
     fn extract_output(self) -> Self::Output {
         let res = self.lines.join("\n").trim().to_string();
         if res.is_empty() {
@@ -166,7 +217,6 @@ impl Widget for Input {
         }
     }
 
-    /// processes incoming key events for editing, cursor movement, navigation, and submission.
     fn handle_key(&mut self, key: KeyEvent) {
         let KeyEvent {
             code, modifiers, ..
@@ -185,6 +235,8 @@ impl Widget for Input {
         };
 
         if should_submit {
+            #[cfg(feature = "buffer")]
+            self.save_to_history();
             self.finished = true;
             self.is_changed = true;
             return;
@@ -235,8 +287,69 @@ impl Widget for Input {
         let is_delete = code == KeyCode::Delete || (is_ctrl && code == KeyCode::Char('d'));
         let is_delete_word = is_ctrl && code == KeyCode::Char('w');
 
-        // mark component state as changed upon handling any valid input event
         self.is_changed = true;
+
+        // --- process history navigation ---
+        #[cfg(feature = "buffer")]
+        if let Some(buffer_id) = self.buffer_id {
+            if is_up || is_down {
+                let can_navigate = if self.multiline {
+                    (is_up && self.cursor_line == 0)
+                        || (is_down && self.cursor_line == self.lines.len().saturating_sub(1))
+                } else {
+                    true
+                };
+
+                if can_navigate {
+                    let histories = COMMAND_HISTORIES.dirty_get();
+                    if let Some(history) = histories.get(&buffer_id) {
+                        if !history.is_empty() {
+                            if is_up {
+                                match self.history_idx {
+                                    None => {
+                                        self.saved_draft = self.lines.join("\n");
+                                        let new_idx = history.len() - 1;
+                                        self.history_idx = Some(new_idx);
+                                        self.lines = vec![history[new_idx].to_string()];
+                                    }
+                                    Some(idx) if idx > 0 => {
+                                        let new_idx = idx - 1;
+                                        self.history_idx = Some(new_idx);
+                                        self.lines = vec![history[new_idx].to_string()];
+                                    }
+                                    _ => {}
+                                }
+                            } else if is_down {
+                                if let Some(idx) = self.history_idx {
+                                    if idx + 1 < history.len() {
+                                        let new_idx = idx + 1;
+                                        self.history_idx = Some(new_idx);
+                                        self.lines = vec![history[new_idx].to_string()];
+                                    } else {
+                                        self.history_idx = None;
+                                        self.lines = self
+                                            .saved_draft
+                                            .split('\n')
+                                            .map(String::from)
+                                            .collect();
+                                    }
+                                }
+                            }
+
+                            self.cursor_line = self.lines.len() - 1;
+                            self.cursor_col = char_count(&self.lines[self.cursor_line]);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // manual editing resets history navigation mode
+        #[cfg(feature = "buffer")]
+        if is_backspace || is_delete || is_delete_word || matches!(code, KeyCode::Char(_)) {
+            self.history_idx = None;
+        }
 
         if is_top {
             if self.multiline {
@@ -353,12 +466,10 @@ impl Widget for Input {
         }
     }
 
-    /// returns true if the input's state has mutated since the last render pass.
     fn is_changed(&self) -> bool {
         self.is_changed
     }
 
-    /// renders the visible line slices according to current viewport height, width, and scroll positions.
     fn render_content(&mut self, width: usize) -> Vec<String> {
         self.adjust_scroll(width);
 
@@ -400,56 +511,59 @@ impl Widget for Input {
         result
     }
 
-    /// returns the relative (x, y) coordinates of the cursor in the visible content box.
     fn cursor_position(&self) -> Option<(usize, usize)> {
         Some((self.cursor_rel_x(), self.cursor_rel_y()))
     }
 
-    /// indicates whether the terminal cursor should be displayed.
     fn show_cursor(&self) -> bool {
         true
     }
 }
 
 impl Block<Input> {
-    /// Sets a default fallback value to be used when the user submits an empty input.
-    ///
-    /// # Arguments
-    /// * `val` - The fallback text value convertibles into a [`String`].
+    /// Sets the default fallback value returned when the input field is left empty upon submission.
     pub fn default_val(mut self, val: impl Display) -> Self {
         self.inner.default = Some(val.to_string());
         self
     }
 
-    /// Sets placeholder text to be displayed when the input is empty.
-    ///
-    /// # Arguments
-    /// * `text` - The placeholder text convertible into a [`String`].
+    /// Sets the placeholder text displayed when the input field is empty.
     pub fn placeholder(mut self, text: impl Display) -> Self {
         self.inner.placeholder = Some(text.to_string());
         self
     }
 
-    /// Enables or disables input masking (e.g., replacing text with asterisks for password fields).
-    ///
-    /// # Arguments
-    /// * `enabled` - `true` to mask characters, `false` to display raw input.
+    /// Enables or disables secret masking mode (replaces characters with asterisks).
     pub fn secret(mut self, enabled: bool) -> Self {
         self.inner.secret = enabled;
         self
     }
 
     /// Enables or disables multi-line input mode.
-    ///
-    /// # Arguments
-    /// * `enabled` - `true` to allow multi-line editing and scrolling, `false` for single-line mode.
     pub fn multiline(mut self, enabled: bool) -> Self {
         self.inner.multiline = enabled;
         self
     }
+
+    /// Enables history buffer for the input using the provided `id` and optional entry limit.
+    ///
+    /// # Example
+    /// ```rust
+    /// // Without entry limit:
+    /// Input::new().use_buffer(1, None);
+    ///
+    /// // Limited to the 50 most recent commands:
+    /// Input::new().use_buffer(1, Some(50));
+    /// ```
+    #[cfg(feature = "buffer")]
+    pub fn use_buffer(mut self, id: u64, limit: Option<usize>) -> Self {
+        self.inner.buffer_id = Some(id);
+        self.inner.buffer_limit = limit;
+        self
+    }
 }
 
-/// clips a string slice so that its visual width does not exceed `max_width`.
+/// Clips a string slice to fit within a specified display width using unicode character widths.
 fn clip_to_width(slice: &str, max_width: usize) -> String {
     let mut current_width = 0;
     let mut end_byte = 0;
@@ -466,13 +580,13 @@ fn clip_to_width(slice: &str, max_width: usize) -> String {
     slice[..end_byte].to_string()
 }
 
-/// returns the total character count (code points) of a string slice.
+/// Returns the total character count (Unicode scalar values) of a string slice.
 #[inline]
 fn char_count(s: &str) -> usize {
     s.chars().count()
 }
 
-/// converts a zero-based character index to a byte offset within the given string slice.
+/// Converts a character index to its corresponding byte index within a string slice.
 #[inline]
 fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
     s.char_indices()

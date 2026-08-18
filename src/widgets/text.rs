@@ -64,6 +64,8 @@ pub struct Text {
     pub(crate) prefix_line: LineStyle,
     /// Optional color applied to the prefix vertical stripe & underline.
     pub(crate) prefix_color: Option<Color>,
+    /// Number of empty lines separating prefix/line from content.
+    pub(crate) prefix_margin: usize,
 
     /// Current vertical scroll offset when content exceeds available height.
     pub(crate) scroll_offset: Arc<RwLock<usize>>,
@@ -100,6 +102,7 @@ impl Text {
             prefix_stripe: StripeStyle::None,
             prefix_line: LineStyle::default(),
             prefix_color: None,
+            prefix_margin: 1,
 
             scroll_offset,
 
@@ -127,6 +130,12 @@ impl Block<Text> {
     /// sets the color of the horizontal separator line underneath the prefix.
     pub fn prefix_color(mut self, color: Color) -> Self {
         self.inner.prefix_color = Some(color);
+        self
+    }
+
+    /// sets the vertical margin (in empty lines) below the prefix / prefix line before dynamic content.
+    pub fn prefix_margin(mut self, margin: usize) -> Self {
+        self.inner.prefix_margin = margin;
         self
     }
 
@@ -308,16 +317,13 @@ impl Widget for Text {
 
         let mut lines = Vec::new();
         let mut prefix_max_width = 0;
+        let mut has_prefix_content = false;
 
-        // 1. Render static prefix
-        if !self.static_prefix.is_empty() {
-            let stripe_char = get_stripe_char(self.prefix_stripe);
-            let sideline_prefix = if let Some(ch) = stripe_char {
+        // Вспомогательная фунция генерации префиксного страйпа для пустых/отступных строк
+        let get_sideline_prefix = || {
+            if let Some(ch) = get_stripe_char(self.prefix_stripe) {
                 let s = format!("{} ", ch);
-                let color = self
-                    .prefix_color
-                    .or(self.prefix_color)
-                    .or(self.spinner_color);
+                let color = self.prefix_color.or(self.spinner_color);
                 if let Some(c) = color {
                     s.with(c).to_string()
                 } else {
@@ -325,8 +331,12 @@ impl Widget for Text {
                 }
             } else {
                 String::new()
-            };
+            }
+        };
 
+        // 1. Render static prefix
+        if !self.static_prefix.is_empty() {
+            let sideline_prefix = get_sideline_prefix();
             let sideline_w = ansi::visible_width(&sideline_prefix);
             let available_prefix_width = width.saturating_sub(sideline_w);
 
@@ -377,6 +387,10 @@ impl Widget for Text {
                     acc
                 };
 
+                if !prefix_lines.is_empty() {
+                    has_prefix_content = true;
+                }
+
                 for p_line in prefix_lines {
                     let full_line = format!("{}{}\x1b[0m", sideline_prefix, p_line);
                     let vis_w = ansi::visible_width(&full_line);
@@ -393,25 +407,12 @@ impl Widget for Text {
             && !self.static_prefix.is_empty()
             && prefix_max_width > 0
         {
+            has_prefix_content = true;
             let line_symbol = self.prefix_line.as_char();
             let underline_len = prefix_max_width.min(width);
 
             let line_str = if get_stripe_char(self.prefix_stripe).is_some() {
-                let stripe_char = get_stripe_char(self.prefix_stripe);
-                let sideline_prefix = if let Some(ch) = stripe_char {
-                    let s = format!("{} ", ch);
-                    let color = self
-                        .prefix_color
-                        .or(self.prefix_color)
-                        .or(self.spinner_color);
-                    if let Some(c) = color {
-                        s.with(c).to_string()
-                    } else {
-                        s
-                    }
-                } else {
-                    String::new()
-                };
+                let sideline_prefix = get_sideline_prefix();
                 let sideline_w = ansi::visible_width(&sideline_prefix);
                 let remaining_len = underline_len.saturating_sub(sideline_w);
 
@@ -431,6 +432,14 @@ impl Widget for Text {
             };
 
             lines.push(line_str);
+        }
+
+        // 1.8. Render prefix_margin (indentation after the prefix/ dividing line)
+        if has_prefix_content && self.prefix_margin > 0 {
+            let margin_line = get_sideline_prefix();
+            for _ in 0..self.prefix_margin {
+                lines.push(margin_line.clone());
+            }
         }
 
         // 2. Render spinner and dynamic text
