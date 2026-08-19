@@ -276,9 +276,9 @@ impl Widget for Text {
     fn render_content(
         &mut self,
         max_width: Option<usize>,
-        max_height: Option<usize>,
+        _max_height: Option<usize>,
     ) -> Vec<String> {
-        // Reset change flag during actual rendering
+        // reset change flag during actual rendering
         self.is_changed.store(false, Ordering::Release);
 
         let is_done = *self.is_done.read().unwrap_or_else(|e| e.into_inner());
@@ -290,7 +290,7 @@ impl Widget for Text {
             .map(|s| s.clone())
             .unwrap_or_else(|e| e.into_inner().clone());
 
-        // Construct spinner icon string
+        // construct spinner icon string
         let spinner_str = if spinner_active {
             let frames = self.spinner_style.frames();
             if frames.is_empty() {
@@ -319,7 +319,7 @@ impl Widget for Text {
         let mut prefix_max_width = 0;
         let mut has_prefix_content = false;
 
-        // Вспомогательная функция генерации префиксного страйпа для пустых/отступных строк
+        // a helper function for generating a prefix strip for empty/indented strings.
         let get_sideline_prefix = || {
             if let Some(ch) = get_stripe_char(self.prefix_stripe) {
                 let s = format!("{} ", ch);
@@ -389,7 +389,7 @@ impl Widget for Text {
             has_prefix_content = true;
             let line_symbol = self.prefix_line.as_char();
 
-            // Если max_width задан — ограничиваем длину разделителя, иначе по ширине префикса
+            // if max_width is specified, limit the length of the delimiter; otherwise, use the width of the prefix.
             let underline_len = match max_width {
                 Some(w) => prefix_max_width.min(w),
                 None => prefix_max_width,
@@ -452,7 +452,7 @@ impl Widget for Text {
                 }
             }
             None => {
-                // max_width == None: Не переносим текст по ширине, просто режем по переходам строк \n
+                // max_width == None: don’t wrap the text to fit the width; simply split it at line breaks \n
                 raw_dynamic_text.lines().map(|s| s.to_string()).collect()
             }
         };
@@ -477,16 +477,6 @@ impl Widget for Text {
             .map_or(false, |line| ansi::visible_width(line) == 0)
         {
             lines.pop();
-        }
-
-        // 3. Учет max_height и scroll_offset
-        if let Some(height) = max_height {
-            let scroll = *self.scroll_offset.read().unwrap_or_else(|e| e.into_inner());
-            if scroll < lines.len() {
-                lines = lines.into_iter().skip(scroll).take(height).collect();
-            } else {
-                lines.clear();
-            }
         }
 
         lines

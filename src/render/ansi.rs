@@ -451,3 +451,74 @@ pub fn lerp_color(start: Color, end: Color, t: f32) -> Color {
         _ => end,
     }
 }
+
+/// Truncates the string `s` to the specified visible width `max_width` (in terminal columns).
+///
+/// Preserves all ANSI escape sequences encountered before the width limit is reached.
+/// If the truncation occurs within a colored/styled section, a style reset (`\x1b[0m`) is added to the end to reset the formatting for the subsequent text.
+pub fn truncate_str(s: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+
+    if visible_width(s) <= max_width {
+        return s.to_string();
+    }
+
+    let mut result = String::with_capacity(s.len());
+    let mut current_width = 0;
+    let mut chars = s.chars().peekable();
+    let mut is_styled = false;
+
+    while let Some(ch) = chars.next() {
+        // parsing ANSI escape sequences
+        if ch == '\x1B' {
+            result.push(ch);
+
+            if let Some(&'[') = chars.peek() {
+                result.push(chars.next().unwrap());
+
+                let mut sequence_body = String::new();
+                while let Some(&c) = chars.peek() {
+                    result.push(c);
+                    sequence_body.push(c);
+                    chars.next();
+
+                    // ANSI CSI sequences end with the letter
+                    if c.is_ascii_alphabetic() {
+                        // if encounter a reset (\x1b[0m or \x1b[m)
+                        if c == 'm' {
+                            let params = &sequence_body[..sequence_body.len() - 1];
+                            if params.is_empty() || params == "0" || params.ends_with(";0") {
+                                is_styled = false;
+                            } else {
+                                is_styled = true;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        // calculating the visible width of the current character
+        let ch_s = ch.to_string();
+        let ch_w = visible_width(&ch_s);
+
+        // if adding a character exceeds the allowed width, stop adding characters.
+        if current_width + ch_w > max_width {
+            break;
+        }
+
+        result.push(ch);
+        current_width += ch_w;
+    }
+
+    // if the text was cut off inside a styled block, we add an ANSI reset.
+    if is_styled {
+        result.push_str("\x1b[0m");
+    }
+
+    result
+}

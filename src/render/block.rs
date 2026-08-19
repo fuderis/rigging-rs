@@ -100,6 +100,8 @@ pub struct Block<W: Widget> {
     pub min_height: Option<usize>,
     /// Maximum constraint for content height.
     pub max_height: Option<usize>,
+    /// Truncates the lines by width
+    pub truncate_lines: bool,
 
     /// Disables rendering of the top border line.
     pub no_top_border: bool,
@@ -141,6 +143,7 @@ impl<W: Widget> Block<W> {
             max_width: None,
             min_height: None,
             max_height: None,
+            truncate_lines: false,
 
             no_top_border: false,
             no_bottom_border: false,
@@ -209,6 +212,12 @@ impl<W: Widget> Block<W> {
     /// Sets the maximum allowable height for the block.
     pub fn max_height(mut self, height: usize) -> Self {
         self.max_height = Some(height);
+        self
+    }
+
+    /// Enables/disabled the line truncate by max available width.
+    pub fn truncate_lines(mut self, enable: bool) -> Self {
+        self.truncate_lines = enable;
         self
     }
 
@@ -593,15 +602,32 @@ impl<W: Widget> Block<W> {
             .map(|h| h.saturating_sub(vert_overhead));
 
         // fetch content lines from wrapped inner widget
-        let raw_lines = self
-            .inner
-            .render_content(Some(max_allowed_inner), max_text_rows);
+        let raw_lines = self.inner.render_content(
+            if self.truncate_lines {
+                None
+            } else {
+                Some(max_allowed_inner)
+            },
+            max_text_rows,
+        );
 
+        // split them down by \n into a flat list.
         let mut content_lines = Vec::with_capacity(raw_lines.len());
         for line in raw_lines {
             content_lines.extend(line.split('\n').map(str::to_owned));
         }
 
+        // trim BY HEIGHT, leaving the LAST lines (tail).
+        let effective_max_h = self.max_height.or(viewport_height);
+        if let Some(max_h) = effective_max_h {
+            let max_text_rows = max_h.saturating_sub(vert_overhead);
+            if content_lines.len() > max_text_rows {
+                let skip_count = content_lines.len().saturating_sub(max_text_rows);
+                content_lines = content_lines.into_iter().skip(skip_count).collect();
+            }
+        }
+
+        // calculate the actual width AFTER the unnecessary top lines have been trimmed.
         let actual_content_w = content_lines
             .iter()
             .map(|l| ansi::visible_width(l))
@@ -682,10 +708,14 @@ impl<W: Widget> Block<W> {
         let actual_text_area_w = inner_w.saturating_sub(pad.left + pad.right);
 
         for line in content_lines {
-            let safe_line: Cow<str> = if line.contains('\t') {
+            let mut safe_line: Cow<str> = if line.contains('\t') {
                 Cow::Owned(line.replace('\t', "    "))
             } else {
                 Cow::Borrowed(&line)
+            };
+
+            if self.truncate_lines {
+                safe_line = Cow::Owned(ansi::truncate_str(&safe_line, actual_text_area_w));
             };
 
             let line_w = ansi::visible_width(&safe_line);
