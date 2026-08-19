@@ -16,7 +16,11 @@ pub trait Widget: Send + Sync {
     /// # Parameters
     ///
     /// * `width` - The available horizontal space in columns.
-    fn render_content(&mut self, width: usize) -> Vec<String>;
+    fn render_content(
+        &mut self,
+        max_width: Option<usize>,
+        max_height: Option<usize>,
+    ) -> Vec<String>;
 
     /// Handles incoming keyboard input events.
     ///

@@ -255,7 +255,7 @@ impl Block<Text> {
 impl Widget for Text {
     type Output = String;
 
-    /// checks whether the widget needs to be re-rendered on screen.
+    /// Checks whether the widget needs to be re-rendered on screen.
     fn is_changed(&self) -> bool {
         // 1. Content, scroll, or window resize changes
         if self.is_changed.load(Ordering::Acquire) {
@@ -267,17 +267,17 @@ impl Widget for Text {
         !is_done && self.spinner_style != SpinnerStyle::None
     }
 
-    /// handles terminal window resize events by signaling a state change.
+    /// Handles terminal window resize events by signaling a state change.
     fn on_resize(&mut self, _rows: u16, _cols: u16) {
         self.is_changed.store(true, Ordering::Release);
     }
 
-    /// renders the prefix, dynamic content, and spinner animation into terminal line strings.
-    fn render_content(&mut self, width: usize) -> Vec<String> {
-        if width == 0 {
-            return Vec::new();
-        }
-
+    /// Renders the prefix, dynamic content, and spinner animation into terminal line strings.
+    fn render_content(
+        &mut self,
+        max_width: Option<usize>,
+        max_height: Option<usize>,
+    ) -> Vec<String> {
         // Reset change flag during actual rendering
         self.is_changed.store(false, Ordering::Release);
 
@@ -319,7 +319,7 @@ impl Widget for Text {
         let mut prefix_max_width = 0;
         let mut has_prefix_content = false;
 
-        // Вспомогательная фунция генерации префиксного страйпа для пустых/отступных строк
+        // Вспомогательная функция генерации префиксного страйпа для пустых/отступных строк
         let get_sideline_prefix = || {
             if let Some(ch) = get_stripe_char(self.prefix_stripe) {
                 let s = format!("{} ", ch);
@@ -334,71 +334,50 @@ impl Widget for Text {
             }
         };
 
-        // 1. Render static prefix
+        // 1. Render static prefix (plain text)
         if !self.static_prefix.is_empty() {
             let sideline_prefix = get_sideline_prefix();
             let sideline_w = ansi::visible_width(&sideline_prefix);
-            let available_prefix_width = width.saturating_sub(sideline_w);
 
-            if available_prefix_width > 0 {
-                #[cfg(feature = "markdown")]
-                let prefix_lines: Vec<String> = {
-                    let rendered = self
-                        .markdown
-                        .render(&self.static_prefix, available_prefix_width);
-                    let trimmed = rendered.trim_end_matches(|c| c == '\r' || c == '\n');
-                    if trimmed.is_empty() {
-                        Vec::new()
-                    } else {
-                        trimmed.lines().map(|s| s.to_string()).collect()
-                    }
-                };
-
-                #[cfg(not(feature = "markdown"))]
-                let prefix_lines: Vec<String> = {
-                    let normalized_prefix = self
+            let prefix_lines: Vec<String> = match max_width.map(|w| w.saturating_sub(sideline_w)) {
+                Some(w) if w > 0 => {
+                    let normalized = self
                         .static_prefix
                         .replace("\r\n", "\n")
                         .replace('\r', "\n")
                         .replace('\t', "    ");
-
-                    let prefix_raw_lines: Vec<&str> = normalized_prefix.split('\n').collect();
                     let mut acc = Vec::new();
                     let mut active_ansi = String::new();
 
-                    for prefix_line_str in prefix_raw_lines {
-                        if prefix_line_str.is_empty() {
+                    for line in normalized.split('\n') {
+                        if line.is_empty() {
                             acc.push(active_ansi.clone());
                         } else {
-                            let line_with_color = format!("{}{}", active_ansi, prefix_line_str);
-                            let wrapped =
-                                ansi::wrap_terminal_text(&line_with_color, available_prefix_width);
-
+                            let line_with_color = format!("{}{}", active_ansi, line);
+                            let wrapped = ansi::wrap_terminal_text(&line_with_color, w);
                             if let Some(last_line) = wrapped.last() {
-                                if let Some(color) = ansi::get_active_text_color(last_line) {
-                                    active_ansi = color;
-                                } else {
-                                    active_ansi.clear();
-                                }
+                                active_ansi =
+                                    ansi::get_active_text_color(last_line).unwrap_or_default();
                             }
                             acc.extend(wrapped);
                         }
                     }
                     acc
-                };
-
-                if !prefix_lines.is_empty() {
-                    has_prefix_content = true;
                 }
+                _ => self.static_prefix.lines().map(|s| s.to_string()).collect(),
+            };
 
-                for p_line in prefix_lines {
-                    let full_line = format!("{}{}\x1b[0m", sideline_prefix, p_line);
-                    let vis_w = ansi::visible_width(&full_line);
-                    if vis_w > prefix_max_width {
-                        prefix_max_width = vis_w;
-                    }
-                    lines.push(full_line);
+            if !prefix_lines.is_empty() {
+                has_prefix_content = true;
+            }
+
+            for p_line in prefix_lines {
+                let full_line = format!("{}{}\x1b[0m", sideline_prefix, p_line);
+                let vis_w = ansi::visible_width(&full_line);
+                if vis_w > prefix_max_width {
+                    prefix_max_width = vis_w;
                 }
+                lines.push(full_line);
             }
         }
 
@@ -409,7 +388,12 @@ impl Widget for Text {
         {
             has_prefix_content = true;
             let line_symbol = self.prefix_line.as_char();
-            let underline_len = prefix_max_width.min(width);
+
+            // Если max_width задан — ограничиваем длину разделителя, иначе по ширине префикса
+            let underline_len = match max_width {
+                Some(w) => prefix_max_width.min(w),
+                None => prefix_max_width,
+            };
 
             let line_str = if get_stripe_char(self.prefix_stripe).is_some() {
                 let sideline_prefix = get_sideline_prefix();
@@ -434,7 +418,7 @@ impl Widget for Text {
             lines.push(line_str);
         }
 
-        // 1.8. Render prefix_margin (indentation after the prefix/ dividing line)
+        // 1.8. Render prefix_margin
         if has_prefix_content && self.prefix_margin > 0 {
             let margin_line = get_sideline_prefix();
             for _ in 0..self.prefix_margin {
@@ -443,40 +427,35 @@ impl Widget for Text {
         }
 
         // 2. Render spinner and dynamic text
-        let available_content_width = width.saturating_sub(spinner_width);
-
-        if available_content_width == 0 {
-            let dyn_lines = ansi::wrap_terminal_text(&raw_dynamic_text, width);
-            for (idx, line) in dyn_lines.iter().enumerate() {
-                if idx == 0 {
-                    lines.push(format!("{}{}\x1b[0m", spinner_str, line));
+        let content_lines: Vec<String> = match max_width {
+            Some(w) => {
+                let available_content_width = w.saturating_sub(spinner_width);
+                if available_content_width == 0 {
+                    Vec::new()
                 } else {
-                    lines.push(format!("{}{}\x1b[0m", spinner_indent, line));
+                    #[cfg(feature = "markdown")]
+                    {
+                        let rendered = self
+                            .markdown
+                            .render(&raw_dynamic_text, available_content_width);
+                        let trimmed = rendered.trim_end_matches(|c| c == '\r' || c == '\n');
+                        if trimmed.is_empty() {
+                            Vec::new()
+                        } else {
+                            trimmed.lines().map(|s| s.to_string()).collect()
+                        }
+                    }
+                    #[cfg(not(feature = "markdown"))]
+                    {
+                        ansi::wrap_terminal_text(&raw_dynamic_text, available_content_width)
+                    }
                 }
             }
-            if dyn_lines.is_empty() {
-                lines.push(spinner_str);
-            }
-            return lines;
-        }
-
-        #[cfg(feature = "markdown")]
-        let content_lines: Vec<String> = {
-            let rendered = self
-                .markdown
-                .render(&raw_dynamic_text, available_content_width);
-
-            let trimmed = rendered.trim_end_matches(|c| c == '\r' || c == '\n');
-
-            if trimmed.is_empty() {
-                Vec::new()
-            } else {
-                trimmed.lines().map(|s| s.to_string()).collect()
+            None => {
+                // max_width == None: Не переносим текст по ширине, просто режем по переходам строк \n
+                raw_dynamic_text.lines().map(|s| s.to_string()).collect()
             }
         };
-
-        #[cfg(not(feature = "markdown"))]
-        let content_lines = ansi::wrap_terminal_text(&raw_dynamic_text, available_content_width);
 
         let mut dyn_rendered_lines = Vec::new();
         for (idx, line) in content_lines.into_iter().enumerate() {
@@ -500,10 +479,20 @@ impl Widget for Text {
             lines.pop();
         }
 
+        // 3. Учет max_height и scroll_offset
+        if let Some(height) = max_height {
+            let scroll = *self.scroll_offset.read().unwrap_or_else(|e| e.into_inner());
+            if scroll < lines.len() {
+                lines = lines.into_iter().skip(scroll).take(height).collect();
+            } else {
+                lines.clear();
+            }
+        }
+
         lines
     }
 
-    /// processes keyboard navigation events for scrolling the content.
+    /// Processes keyboard navigation events for scrolling the content.
     fn handle_key(&mut self, key: KeyEvent) {
         let mut scroll = self
             .scroll_offset

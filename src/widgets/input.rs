@@ -25,10 +25,6 @@ pub struct Input {
     secret: bool,
     /// Indicates whether multi-line editing is enabled.
     multiline: bool,
-    /// Minimum allowed height (in rows) for multi-line display.
-    min_height: usize,
-    /// Maximum allowed height (in rows) for multi-line display.
-    max_height: usize,
 
     /// Text lines contained in the input field.
     pub(crate) lines: Vec<String>,
@@ -69,8 +65,6 @@ impl Input {
             placeholder: None,
             secret: false,
             multiline: false,
-            min_height: 1,
-            max_height: 5,
             lines: vec![String::new()],
             cursor_line: 0,
             cursor_col: 0,
@@ -152,21 +146,21 @@ impl Input {
     }
 
     /// Adjusts horizontal and vertical scroll offsets based on cursor position and viewport dimensions.
-    fn adjust_scroll(&self, visible_width: usize) {
+    fn adjust_scroll(&self, visible_width: usize, max_height: usize) {
         let mut v_scroll = self.v_scroll.load(Ordering::Relaxed);
         let h_scroll = self.h_scroll.load(Ordering::Relaxed);
 
         if self.cursor_line < v_scroll {
             v_scroll = self.cursor_line;
-        } else if self.cursor_line >= self.max_height {
-            v_scroll = self.cursor_line - self.max_height + 1;
+        } else if self.cursor_line >= v_scroll + max_height {
+            v_scroll = self.cursor_line + 1 - max_height;
         }
 
         let total_lines = self.lines.len();
-        if total_lines <= self.max_height {
+        if total_lines <= max_height {
             v_scroll = 0;
-        } else if v_scroll + self.max_height > total_lines {
-            v_scroll = total_lines.saturating_sub(self.max_height);
+        } else if v_scroll + max_height > total_lines {
+            v_scroll = total_lines.saturating_sub(max_height);
         }
 
         self.v_scroll.store(v_scroll, Ordering::Relaxed);
@@ -422,26 +416,21 @@ impl Widget for Input {
         } else if is_delete_word {
             if self.cursor_col > 0 {
                 let line = &self.lines[self.cursor_line];
-                let chars: Vec<(usize, char)> = line.char_indices().collect();
+                let chars: Vec<char> = line.chars().collect();
+                let target_col = self.cursor_col.min(chars.len());
 
-                let mut new_col = self.cursor_col;
-                while new_col > 0 && chars[new_col - 1].1.is_whitespace() {
+                let mut new_col = target_col;
+                // Пропускаем пробелы слева от курсора
+                while new_col > 0 && chars[new_col - 1].is_whitespace() {
                     new_col -= 1;
                 }
-                while new_col > 0 && !chars[new_col - 1].1.is_whitespace() {
+                // Пропускаем сам слово-блок
+                while new_col > 0 && !chars[new_col - 1].is_whitespace() {
                     new_col -= 1;
                 }
 
-                let start_byte = if new_col < chars.len() {
-                    chars[new_col].0
-                } else {
-                    line.len()
-                };
-                let end_byte = if self.cursor_col < chars.len() {
-                    chars[self.cursor_col].0
-                } else {
-                    line.len()
-                };
+                let start_byte = char_to_byte_idx(line, new_col);
+                let end_byte = char_to_byte_idx(line, target_col);
 
                 self.lines[self.cursor_line].drain(start_byte..end_byte);
                 self.cursor_col = new_col;
@@ -470,14 +459,19 @@ impl Widget for Input {
         self.is_changed
     }
 
-    fn render_content(&mut self, width: usize) -> Vec<String> {
-        self.adjust_scroll(width);
-
+    fn render_content(
+        &mut self,
+        max_width: Option<usize>,
+        max_height: Option<usize>,
+    ) -> Vec<String> {
+        let width = max_width.unwrap_or(usize::MAX);
         let visible_height = if self.multiline {
-            self.lines.len().clamp(self.min_height, self.max_height)
+            max_height.unwrap_or(10)
         } else {
             1
         };
+
+        self.adjust_scroll(width, visible_height);
 
         let mut result = Vec::with_capacity(visible_height);
         let v_scroll = self.v_scroll.load(Ordering::Relaxed);

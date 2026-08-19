@@ -579,8 +579,23 @@ impl<W: Widget> Block<W> {
             max_allowed_inner = max_allowed_inner.min(user_max_content);
         }
 
+        // calculate max available height
+        let vert_overhead = mar.top
+            + mar.bottom
+            + pad.top
+            + pad.bottom
+            + if has_top_line { 1 } else { 0 }
+            + if has_bot_line { 1 } else { 0 };
+
+        let max_text_rows = self
+            .max_height
+            .or(viewport_height)
+            .map(|h| h.saturating_sub(vert_overhead));
+
         // fetch content lines from wrapped inner widget
-        let raw_lines = self.inner.render_content(max_allowed_inner);
+        let raw_lines = self
+            .inner
+            .render_content(Some(max_allowed_inner), max_text_rows);
 
         let mut content_lines = Vec::with_capacity(raw_lines.len());
         for line in raw_lines {
