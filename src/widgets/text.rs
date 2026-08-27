@@ -339,33 +339,39 @@ impl Widget for Text {
             let sideline_prefix = get_sideline_prefix();
             let sideline_w = ansi::visible_width(&sideline_prefix);
 
-            let prefix_lines: Vec<String> = match max_width.map(|w| w.saturating_sub(sideline_w)) {
-                Some(w) if w > 0 => {
-                    let normalized = self
-                        .static_prefix
-                        .replace("\r\n", "\n")
-                        .replace('\r', "\n")
-                        .replace('\t', "    ");
-                    let mut acc = Vec::new();
-                    let mut active_ansi = String::new();
+            let normalized = self
+                .static_prefix
+                .replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .replace('\t', "    ");
 
-                    for line in normalized.split('\n') {
-                        if line.is_empty() {
-                            acc.push(active_ansi.clone());
-                        } else {
-                            let line_with_color = format!("{}{}", active_ansi, line);
-                            let wrapped = ansi::wrap_terminal_text(&line_with_color, w);
-                            if let Some(last_line) = wrapped.last() {
-                                active_ansi =
-                                    ansi::get_active_text_color(last_line).unwrap_or_default();
-                            }
-                            acc.extend(wrapped);
+            let target_width = max_width.map(|w| w.saturating_sub(sideline_w));
+
+            let mut prefix_lines = Vec::new();
+            let mut active_ansi = String::new();
+
+            for raw_line in normalized.split('\n') {
+                // insert the current saved ANSI color before each new line from \n.
+                let line_with_color = format!("{}{}", active_ansi, raw_line);
+
+                let wrapped_sublines = match target_width {
+                    Some(w) if w > 0 => ansi::wrap_terminal_text(&line_with_color, w),
+                    _ => vec![line_with_color],
+                };
+
+                for subline in wrapped_sublines {
+                    if !subline.is_empty() {
+                        // update the current active color using ansi::get_active_text_color.
+                        if let Some(color) = ansi::get_active_text_color(&subline) {
+                            active_ansi = color;
                         }
+                        prefix_lines.push(subline);
+                    } else {
+                        // an empty substring retains the active color.
+                        prefix_lines.push(active_ansi.clone());
                     }
-                    acc
                 }
-                _ => self.static_prefix.lines().map(|s| s.to_string()).collect(),
-            };
+            }
 
             if !prefix_lines.is_empty() {
                 has_prefix_content = true;

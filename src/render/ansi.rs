@@ -4,7 +4,7 @@ use unicode_width::UnicodeWidthStr;
 #[cfg(feature = "markdown")]
 use crossterm::style::Stylize;
 
-/// parses the active ANSI foreground color sequence by scanning backwards from the end of a string slice.
+/// Parses the active ANSI foreground color sequence by scanning backwards from the end of a string slice.
 ///
 /// # Arguments
 ///
@@ -76,7 +76,7 @@ pub fn get_active_text_color(text_slice: &str) -> Option<String> {
     None
 }
 
-/// calculates the visible display width of a string in terminal grid columns, ignoring ANSI escape sequences.
+/// Calculates the visible display width of a string in terminal grid columns, ignoring ANSI escape sequences.
 ///
 /// # Arguments
 ///
@@ -109,7 +109,7 @@ pub fn expand_tabs(text: &str, tab_width: usize) -> String {
     result
 }
 
-/// wraps raw terminal text to fit within a specified maximum display width.
+/// Wraps raw terminal text to fit within a specified maximum display width.
 ///
 /// # Arguments
 ///
@@ -145,7 +145,7 @@ pub fn wrap_terminal_text(text: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
-/// wraps a single paragraph of text while preserving ANSI color state across line wraps.
+/// Wraps a single paragraph of text while preserving ANSI color state across line wraps.
 ///
 /// # Arguments
 ///
@@ -221,7 +221,7 @@ pub fn wrap_paragraph(paragraph: &str, max_width: usize) -> Vec<String> {
     out
 }
 
-/// splits a single word or continuous token into character chunks based on terminal display width.
+/// Splits a single word or continuous token into character chunks based on terminal display width.
 ///
 /// # Arguments
 ///
@@ -285,7 +285,7 @@ pub fn split_token_by_width(token: &str, max_width: usize) -> Vec<String> {
     out
 }
 
-/// pads and wraps Markdown table cell text according to column constraints and alignment settings.
+/// Pads and wraps Markdown table cell text according to column constraints and alignment settings.
 ///
 /// # Arguments
 ///
@@ -384,7 +384,7 @@ pub fn pad_and_wrap_cell(
     result
 }
 
-/// applies whitespace padding to a text string based on the requested alignment kind.
+/// Applies whitespace padding to a text string based on the requested alignment kind.
 ///
 /// # Arguments
 ///
@@ -419,7 +419,7 @@ pub fn apply_alignment(
     }
 }
 
-/// linearly interpolates between two colors using a factor `t`.
+/// Linearly interpolates between two colors using a factor `t`.
 ///
 /// # Arguments
 ///
