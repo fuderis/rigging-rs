@@ -1,7 +1,7 @@
 //! Demonstration binary for the `rigging` TUI framework showcasing interactive
 //! widgets, async handlers, status indicators, and streaming markdown text rendering.
 
-use std::{error::Error, time::Duration};
+use std::time::Duration;
 
 use rigging::{
     Color, Stylize,
@@ -56,7 +56,7 @@ const BLINK_COLOR: Color = Color::Rgb {
 /// handles user prompts via `Input`, displays an asynchronous processing spinner,
 /// and streams a simulated LLM Markdown response using `Text` widgets.
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let response_chunks = get_test_response();
 
     loop {

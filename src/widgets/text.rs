@@ -75,7 +75,7 @@ pub struct Text {
 
     /// Configuration for Markdown parsing and rendering.
     #[cfg(feature = "markdown")]
-    pub(crate) markdown: Markdown,
+    pub(crate) markdown: Option<Markdown>,
 }
 
 impl Text {
@@ -109,7 +109,7 @@ impl Text {
             is_changed: Arc::new(AtomicBool::new(true)),
 
             #[cfg(feature = "markdown")]
-            markdown: Markdown::default(),
+            markdown: Some(Markdown::default()),
         })
     }
 }
@@ -180,19 +180,6 @@ impl Block<Text> {
         self
     }
 
-    /// applies a unified color theme to the spinner and all Markdown elements.
-    #[cfg(feature = "markdown")]
-    pub fn color(mut self, color: Color) -> Self {
-        self.inner.spinner_color = Some(color);
-        self.inner.markdown = self
-            .inner
-            .markdown
-            .stripe_color(color)
-            .bullet_color(color)
-            .code_color(color);
-        self
-    }
-
     // --- Spinner Styling Methods ---
 
     /// sets the visual style of the spinner animation.
@@ -209,45 +196,71 @@ impl Block<Text> {
 
     // --- Markdown Styling Methods ---
 
-    /// sets the stripe style for Markdown blockquotes.
+    /// Enables/disables markdown highlight
+    #[cfg(feature = "markdown")]
+    pub fn markdown(mut self, enable: bool) -> Self {
+        if enable && self.inner.markdown.is_none() {
+            self.inner.markdown = Some(Markdown::default());
+        }
+        self
+    }
+
+    /// Applies a unified color theme to the spinner and all Markdown elements.
+    #[cfg(feature = "markdown")]
+    pub fn color(mut self, color: Color) -> Self {
+        if let Some(md) = self.inner.markdown {
+            self.inner.markdown =
+                Some(md.stripe_color(color).bullet_color(color).code_color(color));
+        }
+        self.inner.spinner_color = Some(color);
+        self
+    }
+
+    /// Sets the stripe style for Markdown blockquotes.
     #[cfg(feature = "markdown")]
     pub fn stripe_style(mut self, style: StripeStyle) -> Self {
-        self.inner.markdown = self.inner.markdown.stripe_style(style);
+        let md = self.inner.markdown.unwrap_or_default();
+        self.inner.markdown = Some(md.stripe_style(style));
         self
     }
 
-    /// sets the stripe color for Markdown blockquotes.
+    /// Sets the stripe color for Markdown blockquotes.
     #[cfg(feature = "markdown")]
     pub fn stripe_color(mut self, color: Color) -> Self {
-        self.inner.markdown = self.inner.markdown.stripe_color(color);
+        let md = self.inner.markdown.unwrap_or_default();
+        self.inner.markdown = Some(md.stripe_color(color));
         self
     }
 
-    /// sets the bullet style for Markdown lists.
+    /// Sets the bullet style for Markdown lists.
     #[cfg(feature = "markdown")]
     pub fn bullet_style(mut self, style: BulletStyle) -> Self {
-        self.inner.markdown = self.inner.markdown.bullet_style(style);
+        let md = self.inner.markdown.unwrap_or_default();
+        self.inner.markdown = Some(md.bullet_style(style));
         self
     }
 
-    /// sets the bullet color for Markdown lists.
+    /// Sets the bullet color for Markdown lists.
     #[cfg(feature = "markdown")]
     pub fn bullet_color(mut self, color: Color) -> Self {
-        self.inner.markdown = self.inner.markdown.bullet_color(color);
+        let md = self.inner.markdown.unwrap_or_default();
+        self.inner.markdown = Some(md.bullet_color(color));
         self
     }
 
-    /// sets the color for inline code blocks in Markdown.
+    /// Sets the color for inline code blocks in Markdown.
     #[cfg(feature = "markdown")]
     pub fn code_color(mut self, color: Color) -> Self {
-        self.inner.markdown = self.inner.markdown.code_color(color);
+        let md = self.inner.markdown.unwrap_or_default();
+        self.inner.markdown = Some(md.code_color(color));
         self
     }
 
-    /// sets the syntax highlighting theme for code blocks in Markdown.
+    /// Sets the syntax highlighting theme for code blocks in Markdown.
     #[cfg(all(feature = "markdown", feature = "highlight"))]
     pub fn code_theme(mut self, theme: CodeTheme) -> Self {
-        self.inner.markdown = self.inner.markdown.theme(theme);
+        let md = self.inner.markdown.unwrap_or_default();
+        self.inner.markdown = Some(md.theme(theme));
         self
     }
 }
@@ -441,14 +454,16 @@ impl Widget for Text {
                 } else {
                     #[cfg(feature = "markdown")]
                     {
-                        let rendered = self
-                            .markdown
-                            .render(&raw_dynamic_text, available_content_width);
-                        let trimmed = rendered.trim_end_matches(|c| c == '\r' || c == '\n');
-                        if trimmed.is_empty() {
-                            Vec::new()
+                        if let Some(md) = &self.markdown {
+                            let rendered = md.render(&raw_dynamic_text, available_content_width);
+                            let trimmed = rendered.trim_end_matches(|c| c == '\r' || c == '\n');
+                            if trimmed.is_empty() {
+                                Vec::new()
+                            } else {
+                                trimmed.lines().map(|s| s.to_string()).collect()
+                            }
                         } else {
-                            trimmed.lines().map(|s| s.to_string()).collect()
+                            ansi::wrap_terminal_text(&raw_dynamic_text, available_content_width)
                         }
                     }
                     #[cfg(not(feature = "markdown"))]
