@@ -101,27 +101,23 @@ impl Margin {
     }
 
     /// Sets the top margin value.
-    pub fn top(mut self, indent: usize) -> Self {
-        self.top = indent;
-        self
+    pub fn top(indent: usize) -> Self {
+        Self::new(indent, 0, 0, 0)
     }
 
     /// Sets the bottom margin value.
-    pub fn bottom(mut self, indent: usize) -> Self {
-        self.bottom = indent;
-        self
+    pub fn bottom(indent: usize) -> Self {
+        Self::new(0, 0, indent, 0)
     }
 
     /// Sets the left margin value.
-    pub fn left(mut self, indent: usize) -> Self {
-        self.left = indent;
-        self
+    pub fn left(indent: usize) -> Self {
+        Self::new(0, 0, 0, indent)
     }
 
     /// Sets the right margin value.
-    pub fn right(mut self, indent: usize) -> Self {
-        self.right = indent;
-        self
+    pub fn right(indent: usize) -> Self {
+        Self::new(0, indent, 0, 0)
     }
 }
 

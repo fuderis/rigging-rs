@@ -15,7 +15,7 @@ use crate::theme::CodeTheme;
 #[cfg(feature = "markdown")]
 use crate::{render::markdown::Markdown, style::BulletStyle};
 
-/// returns the visual character representing the specified stripe style.
+/// Returns the visual character representing the specified stripe style.
 pub(crate) fn get_stripe_char(style: StripeStyle) -> Option<char> {
     match style {
         StripeStyle::None => None,
@@ -35,7 +35,7 @@ pub struct UpdateHandle {
 }
 
 impl UpdateHandle {
-    /// sends a new text update to the active spinner widget.
+    /// Sends a new text update to the active spinner widget.
     pub fn update(&self, text: impl Into<String>) {
         let _ = self.sender.send(text.into());
     }

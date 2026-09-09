@@ -394,7 +394,7 @@ impl Commands {
                 let pad = " ".repeat(target_width.saturating_sub("help".len()));
                 out.push_str(&format!(
                     "  {}{}{}\n",
-                    help_cmd, pad, "Print this message or the help of the given subcommand(s)"
+                    help_cmd, pad, "Print this message or the help of the given subcommand(s)."
                 ));
             }
             out.push('\n');
@@ -432,12 +432,18 @@ impl Commands {
 
         let pad_h =
             " ".repeat(target_option_width.saturating_sub(ansi::visible_width(&help_flag_str)));
-        out.push_str(&format!("  {}{}{}\n", help_flag_str, pad_h, "Print help"));
+        out.push_str(&format!(
+            "  {}{}{}\n",
+            help_flag_str, pad_h, "Print help message."
+        ));
 
         if is_root {
             let pad_v =
                 " ".repeat(target_option_width.saturating_sub(ansi::visible_width(&ver_flag_str)));
-            out.push_str(&format!("  {}{}{}\n", ver_flag_str, pad_v, "Print version"));
+            out.push_str(&format!(
+                "  {}{}{}\n",
+                ver_flag_str, pad_v, "Print program version."
+            ));
         }
 
         out

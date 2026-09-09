@@ -1,14 +1,11 @@
-use crate::render::{
-    block::Block,
-    widget::{DynamicWidget, Widget},
+use crate::render::{ansi, block::Block, widget::Widget};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
-use std::{
-    future::Future,
-    sync::{Arc, Mutex},
-};
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 
-/// Represents the internal state of a progress bar.
+/// Represents the internal synchronized state of a progress bar.
 #[derive(Debug, Clone)]
 pub struct ProgressState {
     /// Current completion value.
@@ -19,37 +16,41 @@ pub struct ProgressState {
     pub label: Option<String>,
 }
 
-/// Enum representing operations for updating the progress state.
+/// Operations for dynamically updating the progress state from external channels.
 pub enum ProgressOp {
-    /// Set current and total progress values.
-    Set(usize, usize),
-    /// Set progress values along with a new label.
-    SetWithLabel(usize, usize, String),
+    /// Update current progress value.
+    SetCurrent(usize),
+    /// Update current progress value and status label.
+    SetCurrentWithLabel(usize, String),
+    /// Dynamically adjust the total target value if needed.
+    SetTotal(usize),
 }
 
 /// A thread-safe handle used to trigger progress updates from background tasks.
 pub struct ProgressHandle {
-    /// Channel sender for dispatching progress operations.
     sender: mpsc::UnboundedSender<ProgressOp>,
 }
 
 impl ProgressHandle {
-    /// Updates the current and total progress values.
-    pub fn update(&self, current: usize, total: usize) {
-        // dispatch progress update command
-        let _ = self.sender.send(ProgressOp::Set(current, total));
+    /// Updates only the current progress value.
+    pub fn update(&self, current: usize) {
+        let _ = self.sender.send(ProgressOp::SetCurrent(current));
     }
 
-    /// Updates current and total progress values along with a status label.
-    pub fn update_with_label(&self, current: usize, total: usize, label: impl Into<String>) {
-        // dispatch progress update command with custom label
+    /// Updates current progress value and replaces the status label.
+    pub fn update_with_label(&self, current: usize, label: impl Into<String>) {
         let _ = self
             .sender
-            .send(ProgressOp::SetWithLabel(current, total, label.into()));
+            .send(ProgressOp::SetCurrentWithLabel(current, label.into()));
+    }
+
+    /// Dynamically updates the total progress limit.
+    pub fn set_total(&self, total: usize) {
+        let _ = self.sender.send(ProgressOp::SetTotal(total));
     }
 }
 
-/// A customizable progress bar widget supporting dynamic updates.
+/// A customizable progress bar widget supporting dynamic async updates.
 pub struct ProgressBar {
     /// Shared state containing current progress metrics.
     pub(crate) state: Arc<Mutex<ProgressState>>,
@@ -59,18 +60,15 @@ pub struct ProgressBar {
     pub(crate) empty_char: char,
     /// Flag indicating whether percentage output should be rendered.
     pub(crate) show_percentage: bool,
-    /// Signal to notify when the associated background processing completes.
-    pub(crate) done_signal: Arc<Notify>,
+    /// Atomic flag indicating whether the background worker has finished execution.
+    pub(crate) is_finished: Arc<AtomicBool>,
+    /// Atomic flag indicating whether state was updated and requires a re-render.
+    pub(crate) is_changed: Arc<AtomicBool>,
 }
 
 impl ProgressBar {
-    /// Creates a new `ProgressBar` wrapped in a `Block`.
+    /// Creates a new `ProgressBar` builder wrapped in a `Block`.
     pub fn new(current: usize, total: usize) -> Block<Self> {
-        let done_signal = Arc::new(Notify::new());
-
-        // notify immediately by default so static renders complete without waiting
-        done_signal.notify_one();
-
         Block::new(Self {
             state: Arc::new(Mutex::new(ProgressState {
                 current,
@@ -80,56 +78,62 @@ impl ProgressBar {
             filled_char: '█',
             empty_char: '░',
             show_percentage: true,
-            done_signal,
+            // Defaults to finished for static usage without a background task
+            is_finished: Arc::new(AtomicBool::new(true)),
+            // Initial render is required
+            is_changed: Arc::new(AtomicBool::new(true)),
         })
     }
 }
 
 impl Block<ProgressBar> {
     /// Attaches an asynchronous handler function to execute background operations for the progress bar.
-    pub fn handler<F, Fut>(self, task: F) -> Self
+    pub fn handler<F, Fut>(mut self, task: F) -> Self
     where
         F: FnOnce(ProgressHandle) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        // initialize completion signal for background task execution
-        let done_signal = Arc::new(Notify::new());
-        let done_notifier = Arc::clone(&done_signal);
+        let is_finished = Arc::new(AtomicBool::new(false));
+        let finished_flag = Arc::clone(&is_finished);
+
+        let is_changed = Arc::new(AtomicBool::new(true));
+        let changed_flag = Arc::clone(&is_changed);
 
         let (tx, mut rx) = mpsc::unbounded_channel::<ProgressOp>();
 
-        // spawn user background execution task
+        // Spawn user-defined execution task
         tokio::spawn(async move {
             let handle = ProgressHandle { sender: tx };
             task(handle).await;
         });
 
-        // spawn background event loop for state sync
+        // Spawn state-synchronization loop
         let state_writer = Arc::clone(&self.inner.state);
         tokio::spawn(async move {
             while let Some(op) = rx.recv().await {
                 if let Ok(mut lock) = state_writer.lock() {
                     match op {
-                        ProgressOp::Set(curr, tot) => {
+                        ProgressOp::SetCurrent(curr) => {
                             lock.current = curr;
-                            lock.total = tot;
                         }
-                        ProgressOp::SetWithLabel(curr, tot, label) => {
+                        ProgressOp::SetCurrentWithLabel(curr, label) => {
                             lock.current = curr;
-                            lock.total = tot;
                             lock.label = Some(label);
                         }
+                        ProgressOp::SetTotal(tot) => {
+                            lock.total = tot;
+                        }
                     }
+                    changed_flag.store(true, Ordering::SeqCst);
                 }
             }
-            // notify render loop upon channel closure
-            done_notifier.notify_one();
+            finished_flag.store(true, Ordering::SeqCst);
+            changed_flag.store(true, Ordering::SeqCst);
         });
 
-        // assign active completion signal to block inner state
-        let mut block = self;
-        block.inner.done_signal = done_signal;
-        block
+        self.inner.is_finished = is_finished;
+        self.inner.is_changed = is_changed;
+        self
     }
 
     /// Sets the character used for filled progress segments.
@@ -154,6 +158,7 @@ impl Block<ProgressBar> {
     pub fn label(self, label: impl Into<String>) -> Self {
         if let Ok(mut lock) = self.inner.state.lock() {
             lock.label = Some(label.into());
+            self.inner.is_changed.store(true, Ordering::SeqCst);
         }
         self
     }
@@ -162,45 +167,61 @@ impl Block<ProgressBar> {
 impl Widget for ProgressBar {
     type Output = ();
 
-    /// Renders the visual representation of the progress bar based on available width.
-    fn render_content(&self, width: usize) -> Vec<String> {
+    fn is_changed(&self) -> bool {
+        self.is_changed.load(Ordering::SeqCst)
+    }
+
+    fn render_content(
+        &mut self,
+        max_width: Option<usize>,
+        _max_height: Option<usize>,
+    ) -> Vec<String> {
+        // Reset dirty flag upon frame rendering
+        self.is_changed.store(false, Ordering::SeqCst);
+
+        let width = max_width.unwrap_or(80);
+
         if width == 0 {
             return vec![String::new()];
         }
 
-        // safely retrieve state snapshot
-        let lock = self.state.lock().unwrap();
-        let current = lock.current;
-        let total = lock.total;
-        let label = lock.label.clone();
-        drop(lock);
+        // Safely retrieve state snapshot
+        let (current, total, label) = {
+            let lock = self.state.lock().unwrap();
+            (lock.current, lock.total, lock.label.clone())
+        };
 
-        // calculate completion ratio
+        // Calculate completion ratio
         let ratio = if total == 0 {
             1.0
         } else {
             (current as f64 / total as f64).clamp(0.0, 1.0)
         };
 
-        // assemble suffix content
-        let mut suffix = String::new();
-        if self.show_percentage {
+        // 1. Prepare prefix (Label on the left)
+        let prefix = match label {
+            Some(ref l) if !l.is_empty() => format!("{} ", l),
+            _ => String::new(),
+        };
+
+        // 2. Prepare suffix (Percentage on the right)
+        let suffix = if self.show_percentage {
             let percent = (ratio * 100.0) as usize;
-            suffix.push_str(&format!(" {:>3}%", percent));
-        }
-        if let Some(ref l) = label {
-            suffix.push_str(&format!(" {}", l));
-        }
+            format!(" {:>3}%", percent)
+        } else {
+            String::new()
+        };
 
-        let suffix_width = unicode_width::UnicodeWidthStr::width(suffix.as_str());
-        let bar_width = width.saturating_sub(suffix_width);
+        let prefix_width = ansi::visible_width(&prefix);
+        let suffix_width = ansi::visible_width(&suffix);
+        let bar_width = width.saturating_sub(prefix_width + suffix_width);
 
-        // fallback if render space is constrained to suffix only
+        // Fallback if render space is too small for the progress bar itself
         if bar_width == 0 {
-            return vec![suffix];
+            return vec![format!("{}{}\x1b[0m", prefix, suffix)];
         }
 
-        // compute bar fill segment lengths
+        // 3. Compute bar fill segment lengths
         let filled_len = (bar_width as f64 * ratio).round() as usize;
         let empty_len = bar_width.saturating_sub(filled_len);
 
@@ -209,18 +230,13 @@ impl Widget for ProgressBar {
             .chain(std::iter::repeat(self.empty_char).take(empty_len))
             .collect();
 
-        vec![format!("{}{}", bar, suffix)]
-    }
-}
-
-impl DynamicWidget for ProgressBar {
-    /// Provides access to the completion signal handle.
-    fn completion_signal(&self) -> Arc<Notify> {
-        Arc::clone(&self.done_signal)
+        // Layout: [Prefix/Label] [ProgressBar] [Suffix/Percentage]
+        vec![format!("{}{}{}\x1b[0m", prefix, bar, suffix)]
     }
 
-    /// Extracts execution output upon widget finalization.
-    fn extract_output(self) -> Self::Output {
-        ()
+    fn is_finished(&self) -> bool {
+        self.is_finished.load(Ordering::SeqCst)
     }
+
+    fn extract_output(self) -> Self::Output {}
 }

@@ -273,9 +273,85 @@ impl<W: Widget> Block<W> {
         self
     }
 
+    /// Sets outer block top & bottom padding.
+    pub fn padding_ver(mut self, padding: usize) -> Self {
+        self.padding.top = padding;
+        self.padding.bottom = padding;
+        self
+    }
+
+    /// Sets outer block left & right padding.
+    pub fn padding_hor(mut self, padding: usize) -> Self {
+        self.padding.left = padding;
+        self.padding.right = padding;
+        self
+    }
+
+    /// Sets inner content top padding.
+    pub fn padding_top(mut self, padding: usize) -> Self {
+        self.padding.top = padding;
+        self
+    }
+
+    /// Sets inner content right padding.
+    pub fn padding_right(mut self, padding: usize) -> Self {
+        self.padding.right = padding;
+        self
+    }
+
+    /// Sets inner content bottom padding.
+    pub fn padding_bottom(mut self, padding: usize) -> Self {
+        self.padding.bottom = padding;
+        self
+    }
+
+    /// Sets inner content left padding.
+    pub fn padding_left(mut self, padding: usize) -> Self {
+        self.padding.left = padding;
+        self
+    }
+
     /// Sets outer block margin.
     pub fn margin(mut self, margin: Margin) -> Self {
         self.margin = margin;
+        self
+    }
+
+    /// Sets outer block top & bottom margin.
+    pub fn margin_ver(mut self, margin: usize) -> Self {
+        self.margin.top = margin;
+        self.margin.bottom = margin;
+        self
+    }
+
+    /// Sets outer block left & right margin.
+    pub fn margin_hor(mut self, margin: usize) -> Self {
+        self.margin.left = margin;
+        self.margin.right = margin;
+        self
+    }
+
+    /// Sets outer block top margin.
+    pub fn margin_top(mut self, margin: usize) -> Self {
+        self.margin.top = margin;
+        self
+    }
+
+    /// Sets outer block right margin.
+    pub fn margin_right(mut self, margin: usize) -> Self {
+        self.margin.right = margin;
+        self
+    }
+
+    /// Sets outer block bottom margin.
+    pub fn margin_bottom(mut self, margin: usize) -> Self {
+        self.margin.bottom = margin;
+        self
+    }
+
+    /// Sets outer block left margin.
+    pub fn margin_left(mut self, margin: usize) -> Self {
+        self.margin.left = margin;
         self
     }
 
