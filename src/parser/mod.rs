@@ -572,12 +572,15 @@ fn parse_and_validate_node(
         }
     }
 
+    let raw_tokens = expand_short_flags(&input_words, &flag_lookup);
+    let parsed_words: Vec<&str> = raw_tokens.iter().map(|s| s.as_str()).collect();
+
     let mut input_flags = HashMap::new();
     let mut clean_words = Vec::new();
 
     let mut i = 0;
-    while i < input_words.len() {
-        let word = input_words[i];
+    while i < parsed_words.len() {
+        let word = parsed_words[i];
 
         if word.starts_with('-') {
             let (flag_key, inline_val) = word.split_once('=').unwrap_or((word, ""));
@@ -585,14 +588,12 @@ fn parse_and_validate_node(
             if let Some((flag_spec, is_negated)) = flag_lookup.get(flag_key) {
                 let canonical = flag_spec.canonical_name().to_string();
 
-                // determine whether the flag is Boolean based on its default value.
                 let is_boolean_flag = match &flag_spec.kind {
                     FlagKind::Optional(val) => val == "true" || val == "false",
                     FlagKind::Required => false,
                 };
 
                 if !inline_val.is_empty() {
-                    // the value is passed via '='
                     let final_val = if *is_negated {
                         if inline_val.parse::<bool>().unwrap_or(true) {
                             "false"
@@ -606,19 +607,17 @@ fn parse_and_validate_node(
                 } else if *is_negated {
                     input_flags.insert(canonical, "false".to_string());
                 } else if is_boolean_flag {
-                    // for boolean flags, check whether “true” / “false” was explicitly passed further.
-                    if i + 1 < input_words.len()
-                        && (input_words[i + 1] == "true" || input_words[i + 1] == "false")
+                    if i + 1 < parsed_words.len()
+                        && (parsed_words[i + 1] == "true" || parsed_words[i + 1] == "false")
                     {
-                        input_flags.insert(canonical, input_words[i + 1].to_string());
+                        input_flags.insert(canonical, parsed_words[i + 1].to_string());
                         i += 1;
                     } else {
                         input_flags.insert(canonical, "true".to_string());
                     }
                 } else {
-                    // the flag value is passed as a space‑separated string: --uid 1
-                    if i + 1 < input_words.len() && !input_words[i + 1].starts_with('-') {
-                        input_flags.insert(canonical, input_words[i + 1].to_string());
+                    if i + 1 < parsed_words.len() && !parsed_words[i + 1].starts_with('-') {
+                        input_flags.insert(canonical, parsed_words[i + 1].to_string());
                         i += 1;
                     } else if matches!(flag_spec.kind, FlagKind::Required) {
                         return Err(ParseError::MissingRequiredFlag(canonical));
@@ -689,6 +688,58 @@ fn parse_and_validate_node(
     }
 
     Ok((ctx, is_help_requested))
+}
+
+/// Converts grouped short flags (for example, `-ab`) into separate tokens (`-a`, `-b`).
+///
+/// If flag takes a value and it is passed end-to-end (for example, `-uRoot`), the remaining part becomes the value (`-u`, `Root`).
+fn expand_short_flags(
+    input_words: &[&str],
+    flag_lookup: &HashMap<String, (&FlagSpec, bool)>,
+) -> Vec<String> {
+    let mut expanded = Vec::new();
+
+    for word in input_words {
+        // check: it starts with '-', not '--', not empty after '-', and does not contain '='
+        if word.starts_with('-') && !word.starts_with("--") && word.len() > 2 && !word.contains('=')
+        {
+            let chars: Vec<char> = word[1..].chars().collect();
+            let mut i = 0;
+
+            while i < chars.len() {
+                let short_flag = format!("-{}", chars[i]);
+
+                if let Some((spec, _)) = flag_lookup.get(&short_flag) {
+                    let is_boolean = match &spec.kind {
+                        FlagKind::Optional(val) => val == "true" || val == "false",
+                        FlagKind::Required => false,
+                    };
+
+                    if is_boolean {
+                        expanded.push(short_flag);
+                        i += 1;
+                    } else {
+                        // if flag requires/accepts a value, then ALL remaining characters of the chain are
+                        // are considered its value (for example, -uAdmin -> -u Admin)
+                        expanded.push(short_flag);
+                        let rest_val: String = chars[i + 1..].iter().collect();
+                        if !rest_val.is_empty() {
+                            expanded.push(rest_val);
+                        }
+                        break;
+                    }
+                } else {
+                    // if symbol is not found in a known clip, throw it as is for the correct output of UnknownFlag
+                    expanded.push(short_flag);
+                    i += 1;
+                }
+            }
+        } else {
+            expanded.push(word.to_string());
+        }
+    }
+
+    expanded
 }
 
 fn format_option_flags(short: &str, long: &str) -> String {
