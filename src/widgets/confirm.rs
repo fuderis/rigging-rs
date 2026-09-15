@@ -23,6 +23,7 @@ use crate::{
 pub enum Confirmation {
     Yes,
     No,
+    Always,
 }
 
 /// Confirmation prompt widget.
@@ -146,7 +147,7 @@ impl Widget for ConfirmPrompt {
         self.dirty = false;
 
         let hint_str = match self.default {
-            Some(Confirmation::Yes) => "[Y/n]",
+            Some(Confirmation::Yes | Confirmation::Always) => "[Y/n]",
             Some(Confirmation::No) => "[y/N]",
             None => "[y/n]",
         };
@@ -221,6 +222,10 @@ impl Widget for ConfirmPrompt {
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 self.output = Some(Confirmation::No);
+                self.is_finished = true;
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                self.output = Some(Confirmation::Always);
                 self.is_finished = true;
             }
             KeyCode::Enter if self.default.is_some() => {
