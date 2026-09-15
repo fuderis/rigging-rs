@@ -1,46 +1,44 @@
-//! Demonstration binary for the `rigging` TUI framework showcasing interactive
-//! widgets, async handlers, status indicators, and streaming markdown text rendering.
+//! Demonstration binary for the `rigging` TUI framework showcasing nested widget
+//! execution via `Context::push_sub_widget`, interactive confirmation prompts,
+//! and streaming output.
 
 use std::time::Duration;
 
 use rigging::{
     Color, Stylize,
+    render::SubWidgetPosition,
     style::{Align, BorderStyle, LineStyle, Margin, Padding, SpinnerStyle},
-    widgets::{Input, Text},
+    widgets::{
+        Input, Text,
+        confirm::{ConfirmPrompt, Confirmation},
+    },
 };
 
 // =============================================================================
-//  GEOMETRY & PALETTE CONFIGURATION
+// GEOMETRY & PALETTE CONFIGURATION
 // =============================================================================
 
-/// Minimum layout width constraint for widgets.
-const MIN_WIDTH: usize = 70;
+const MIN_WIDTH: usize = 80;
+const MAX_WIDTH: usize = 100;
 
-/// Maximum layout width constraint for widgets.
-const MAX_WIDTH: usize = 70;
-
-/// Vibrant red brand accent color (`#FF5541`).
 const BRAND_COLOR: Color = Color::Rgb {
     r: 255,
     g: 85,
     b: 65,
 };
 
-/// Soft, deep dark navy background color (`#0F1423`).
 const BG_COLOR: Color = Color::Rgb {
     r: 15,
     g: 20,
     b: 35,
 };
 
-/// Muted golden-brown shade used for borders, quotes, and secondary accents (`#8C7851`).
 const ALT_COLOR: Color = Color::Rgb {
     r: 140,
     g: 120,
     b: 81,
 };
 
-/// Slightly lighter dark navy tint used for blinking focus/cursor effects.
 const BLINK_COLOR: Color = Color::Rgb {
     r: 20,
     g: 26,
@@ -48,20 +46,16 @@ const BLINK_COLOR: Color = Color::Rgb {
 };
 
 // =============================================================================
-//  ENTRY POINT & DEMONSTRATION LOOP
+// ENTRY POINT
 // =============================================================================
 
-/// runs the main interactive CLI event loop.
-///
-/// handles user prompts via `Input`, displays an asynchronous processing spinner,
-/// and streams a simulated LLM Markdown response using `Text` widgets.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let response_chunks = get_test_response();
 
     loop {
         // -----------------------------------------------------------------
-        //  1. Input Phase (User Query)
+        // 1. Input Phase (User Query)
         // -----------------------------------------------------------------
         let user_query = Input::new()
             .placeholder("Enter instructions...".with(ALT_COLOR))
@@ -76,16 +70,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
             )
             .min_width(MIN_WIDTH)
             .max_width(MAX_WIDTH)
-            .border(BorderStyle::Rounded)
+            .border_style(BorderStyle::Rounded)
             .border_color(BRAND_COLOR)
-            .background(BG_COLOR)
+            .background_color(BG_COLOR)
             .padding(Padding::hor(1))
+            .show_cursor(true)
             .multiline(true)
             .clear_after(true)
             .render()
             .await?;
 
-        let trimmed_query = user_query.trim();
+        let trimmed_query = user_query.trim().to_string();
 
         if trimmed_query.is_empty() {
             continue;
@@ -96,78 +91,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         }
 
         // -----------------------------------------------------------------
-        //  2. Processing / Status Phase (Spinner Indicator)
-        // -----------------------------------------------------------------
-        Text::new("")
-            .title(" Thinking... ".bold().with(BRAND_COLOR), Align::TopLeft)
-            .min_width(MIN_WIDTH)
-            .max_width(MAX_WIDTH)
-            .spinner_style(SpinnerStyle::Dots)
-            .spinner_color(BRAND_COLOR)
-            .border(BorderStyle::Rounded)
-            .border_color(BRAND_COLOR)
-            .background(BG_COLOR)
-            .padding(Padding::hor(1))
-            .handler(|handle| async move {
-                let steps = [
-                    "Parsing markdown syntax tree...",
-                    "Applying ALT_COLOR styles to tokens...",
-                    "Rendering complex UI layout...",
-                ];
-
-                for step in steps {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    handle.update(step);
-                }
-            })
-            .clear_after(true)
-            .render()
-            .await?;
-
-        // -----------------------------------------------------------------
-        //  3. Streamed Response Phase (AI Output)
+        // 2. Continuous Processing Phase (Thinking -> Confirm -> Response)
         // -----------------------------------------------------------------
         let chunks = response_chunks.clone();
         let timestamp = "Fri 05:31 AM";
 
-        #[allow(unused_mut)]
-        let mut text = Text::new(format!(
-            "{} {}",
-            "You:".bold().with(ALT_COLOR),
-            trimmed_query.dim()
-        ))
-        .title(format!(" {timestamp} ").with(BRAND_COLOR), Align::TopLeft)
-        .min_width(MIN_WIDTH)
-        .max_width(MAX_WIDTH)
-        .spinner_style(SpinnerStyle::MiniDots)
-        .spinner_color(BRAND_COLOR)
-        .prefix_color(ALT_COLOR)
-        .prefix_line(LineStyle::Solid)
-        .border(BorderStyle::Rounded)
-        .border_color(ALT_COLOR)
-        .background(BG_COLOR)
-        .padding(Padding::hor(1))
-        .margin(Margin {
-            bottom: 1,
-            ..Default::default()
-        })
-        .handler(move |handle| async move {
-            let mut current_buffer = String::new();
-            tokio::time::sleep(Duration::from_millis(200)).await;
+        let user_prefix = format!("{} {}", "You:".bold().with(ALT_COLOR), trimmed_query.dim());
 
-            for chunk in chunks {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-                current_buffer.push_str(&chunk);
-                handle.update(current_buffer.clone());
-            }
-        })
-        .blink_color(BLINK_COLOR);
+        #[allow(unused_mut)]
+        let mut text = Text::new(user_prefix)
+            .title(format!(" {timestamp} ").with(BRAND_COLOR), Align::TopLeft)
+            .min_width(MIN_WIDTH)
+            .max_width(MAX_WIDTH)
+            .spinner_style(SpinnerStyle::Dots)
+            .spinner_color(BRAND_COLOR)
+            .prefix_color(ALT_COLOR)
+            .prefix_line(LineStyle::Solid)
+            .border_style(BorderStyle::Rounded)
+            .border_color(BRAND_COLOR)
+            .background_color(BG_COLOR)
+            .padding(Padding::hor(1))
+            .margin(Margin {
+                bottom: 1,
+                ..Default::default()
+            })
+            .handler(move |mut ctx| async move {
+                // --- Step A: Initial Thinking & Progress ---
+                let steps = [
+                    "Parsing markdown syntax tree...",
+                    "Analyzing system security policies...",
+                ];
+
+                for (i, step) in steps.iter().enumerate() {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                    let pct = ((i + 1) * 100) / steps.len();
+                    let filled = (pct / 10).min(10);
+                    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled));
+
+                    *ctx.state = format!("Thinking: {step} [{bar}] {pct}%");
+                    ctx.notify();
+                }
+
+                tokio::time::sleep(Duration::from_millis(200)).await;
+
+                // --- Step B: Push Sub-Widget via Context Runner ---
+                let confirm_widget =
+                    ConfirmPrompt::new("Execute action with elevated root (sudo) privileges?")
+                        .default(Confirmation::No)
+                        .border_style(BorderStyle::Rounded)
+                        .border_color(BRAND_COLOR)
+                        .background_color(BG_COLOR)
+                        .clear_after(true);
+
+                let confirmation_result: std::io::Result<Option<Confirmation>> = ctx
+                    .push_sub_widget(SubWidgetPosition::Replace, false, move |writer, width| {
+                        Box::pin(async move {
+                            let (res, lines) = confirm_widget.render_to(writer, width).await?;
+                            Ok((Box::new(res) as Box<dyn std::any::Any + Send>, lines))
+                        })
+                    })
+                    .await;
+
+                // --- Step C: Streaming LLM Response ---
+                let mut body_buffer = String::new();
+
+                match confirmation_result {
+                    Ok(Some(Confirmation::Yes)) => {
+                        body_buffer.push_str("> **Privileged Execution Context Active**\n\n");
+                    }
+                    _ => {
+                        body_buffer.push_str("> **Sandboxed Mode Active (Non-root)**\n\n");
+                    }
+                }
+
+                for chunk in chunks {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    body_buffer.push_str(&chunk);
+
+                    *ctx.state = body_buffer.clone();
+                    ctx.notify();
+                }
+
+                ctx.finish();
+            })
+            .blink_color(BLINK_COLOR);
 
         #[cfg(feature = "markdown")]
         {
-            text = text.stripe_color(ALT_COLOR); // Vertical stripes (blockquotes)
-            text = text.bullet_color(ALT_COLOR); // List bullets and numbers
-            text = text.code_color(ALT_COLOR); // Inline code formatting (`text`)
+            text = text.stripe_color(ALT_COLOR);
+            text = text.bullet_color(ALT_COLOR);
+            text = text.code_color(ALT_COLOR);
         }
 
         text.render().await?;
@@ -175,12 +189,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 }
 
 // =============================================================================
-//  MOCK DATA PROVIDERS
+// MOCK DATA PROVIDERS
 // =============================================================================
 
-/// returns a simulated chunked Markdown payload for visual UI styling verification.
-///
-/// contains code blocks, tables, task lists, and blockquotes to validate palette application.
 fn get_test_response() -> Vec<String> {
     vec![
         "# Main System Architecture\n\n".to_string(),

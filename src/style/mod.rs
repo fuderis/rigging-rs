@@ -128,7 +128,7 @@ pub enum BorderStyle {
     #[default]
     None,
     /// Single thin line border (`┌ ┐ └ ┘ ─ │`).
-    Solid,
+    Single,
     /// Single thin line border with rounded corners (`╭ ╮ ╰ ╯ ─ │`).
     Rounded,
     /// Double line border (`╔ ╗ ╚ ╝ ═ ║`).
@@ -142,7 +142,7 @@ impl BorderStyle {
     pub fn as_chars(&self) -> (char, char, char, char, char, char) {
         match self {
             BorderStyle::None => (' ', ' ', ' ', ' ', ' ', ' '),
-            BorderStyle::Solid => ('┌', '┐', '└', '┘', '─', '│'),
+            BorderStyle::Single => ('┌', '┐', '└', '┘', '─', '│'),
             BorderStyle::Rounded => ('╭', '╮', '╰', '╯', '─', '│'),
             BorderStyle::Double => ('╔', '╗', '╚', '╝', '═', '║'),
         }

@@ -1,14 +1,13 @@
 use crate::{
-    render::{ansi, block::Block, widget::Widget},
+    render::{block::Block, widget::Widget},
     style::{LineStyle, SpinnerStyle, StripeStyle},
+    utils::ansi,
 };
+
 use crossterm::event::{KeyCode, KeyEvent};
 use crossterm::style::{Color, Stylize};
-use std::sync::{
-    Arc, RwLock,
-    atomic::{AtomicBool, Ordering},
-};
-use tokio::sync::{Notify, mpsc};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "highlight")]
 use crate::theme::CodeTheme;
@@ -27,35 +26,16 @@ pub(crate) fn get_stripe_char(style: StripeStyle) -> Option<char> {
     }
 }
 
-/// A handle for sending text updates to the associated [`Text`] widget.
-#[derive(Clone)]
-pub struct UpdateHandle {
-    /// Unbounded channel sender used to dispatch state updates to the background worker.
-    sender: mpsc::UnboundedSender<String>,
-}
-
-impl UpdateHandle {
-    /// Sends a new text update to the active spinner widget.
-    pub fn update(&self, text: impl Into<String>) {
-        let _ = self.sender.send(text.into());
-    }
-}
-
-/// A dynamic terminal UI component that displays an optional spinner alongside updating text.
+/// A dynamic terminal UI component that displays an optional spinner alongside updating user state.
 pub struct Text {
-    /// The static prefix specified during creation (for example, "Upload: ").
+    /// Static prefix (e.g., "Upload: ").
     pub(crate) static_prefix: String,
-    /// Shared text state rendered next to the spinner.
-    pub(crate) state: Arc<RwLock<String>>,
-    /// Flag indicating whether the underlying asynchronous task has finished or if no task is attached.
-    pub(crate) is_done: Arc<RwLock<bool>>,
-    /// Current index within the spinner frame array.
-    pub(crate) frame_idx: Arc<RwLock<usize>>,
-    /// Notification handle used to signal completion to dynamic renderers.
-    pub(crate) notify: Arc<Notify>,
+
     /// Visual style of the spinner animation.
     pub(crate) spinner_style: SpinnerStyle,
-    /// Optional custom color applied to the spinner animation icon.
+    /// Current frame index of the spinner.
+    pub(crate) frame_idx: usize,
+    /// Optional custom color applied to the spinner icon.
     pub(crate) spinner_color: Option<Color>,
 
     /// Visual style of the vertical stripe displayed alongside the prefix.
@@ -68,10 +48,10 @@ pub struct Text {
     pub(crate) prefix_margin: usize,
 
     /// Current vertical scroll offset when content exceeds available height.
-    pub(crate) scroll_offset: Arc<RwLock<usize>>,
+    pub(crate) scroll_offset: usize,
 
-    /// Atomic flag indicating content mutations to skip redundant redraws.
-    pub(crate) is_changed: Arc<AtomicBool>,
+    /// Atomic flag indicating content/layout changes to trigger redraws.
+    pub(crate) is_changed: AtomicBool,
 
     /// Configuration for Markdown parsing and rendering.
     #[cfg(feature = "markdown")]
@@ -79,124 +59,68 @@ pub struct Text {
 }
 
 impl Text {
-    /// creates a new [`Text`] widget wrapped in a UI block.
+    /// Creates a new [`Text`] widget wrapped in a [`Block`] with user string state.
     pub fn new(static_prefix: impl Into<String>) -> Block<Self> {
-        let static_prefix = static_prefix.into();
-        let state = Default::default();
-        let is_done = Arc::new(RwLock::new(true));
-        let frame_idx = Arc::new(RwLock::new(0));
-        let notify = Arc::new(Notify::new());
-        let scroll_offset = Arc::new(RwLock::new(0));
+        Block::new(
+            Self {
+                static_prefix: static_prefix.into(),
+                spinner_style: SpinnerStyle::Dots,
+                frame_idx: 0,
+                spinner_color: Some(Color::Cyan),
 
-        notify.notify_one();
+                prefix_stripe: StripeStyle::None,
+                prefix_line: LineStyle::default(),
+                prefix_color: None,
+                prefix_margin: 1,
 
-        Block::new(Self {
-            static_prefix,
-            state,
-            is_done,
-            frame_idx,
-            notify,
-            spinner_style: SpinnerStyle::Dots,
-            spinner_color: Some(Color::Cyan),
+                scroll_offset: 0,
+                is_changed: AtomicBool::new(true),
 
-            prefix_stripe: StripeStyle::None,
-            prefix_line: LineStyle::default(),
-            prefix_color: None,
-            prefix_margin: 1,
-
-            scroll_offset,
-
-            is_changed: Arc::new(AtomicBool::new(true)),
-
-            #[cfg(feature = "markdown")]
-            markdown: Some(Markdown::default()),
-        })
+                #[cfg(feature = "markdown")]
+                markdown: Some(Markdown::default()),
+            },
+            String::new(),
+        )
     }
 }
 
 impl Block<Text> {
-    /// sets the style of the horizontal separator line underneath the prefix.
+    /// Sets the style of the horizontal separator line underneath the prefix.
     pub fn prefix_line(mut self, style: LineStyle) -> Self {
         self.inner.prefix_line = style;
         self
     }
 
-    /// sets the style of the vertical side stripe next to the prefix.
+    /// Sets the style of the vertical side stripe next to the prefix.
     pub fn prefix_stripe(mut self, style: StripeStyle) -> Self {
         self.inner.prefix_stripe = style;
         self
     }
 
-    /// sets the color of the horizontal separator line underneath the prefix.
+    /// Sets the color of the horizontal separator line underneath the prefix.
     pub fn prefix_color(mut self, color: Color) -> Self {
         self.inner.prefix_color = Some(color);
         self
     }
 
-    /// sets the vertical margin (in empty lines) below the prefix / prefix line before dynamic content.
+    /// Sets the vertical margin (in empty lines) below the prefix line.
     pub fn prefix_margin(mut self, margin: usize) -> Self {
         self.inner.prefix_margin = margin;
         self
     }
 
-    /// attaches an asynchronous background task that streams text updates to the widget.
-    pub fn handler<F, Fut>(mut self, task: F) -> Self
-    where
-        F: FnOnce(UpdateHandle) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
-    {
-        self.inner.notify = Arc::new(Notify::new());
-
-        if let Ok(mut lock) = self.inner.is_done.write() {
-            *lock = false;
-        }
-
-        let state_writer = Arc::clone(&self.inner.state);
-        let is_done_writer = Arc::clone(&self.inner.is_done);
-        let notify_writer = Arc::clone(&self.inner.notify);
-        let is_changed_writer = Arc::clone(&self.inner.is_changed);
-
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-
-        tokio::spawn(async move {
-            let handle = UpdateHandle { sender: tx };
-            task(handle).await;
-        });
-
-        tokio::spawn(async move {
-            while let Some(new_text) = rx.recv().await {
-                if let Ok(mut lock) = state_writer.write() {
-                    *lock = new_text;
-                    is_changed_writer.store(true, Ordering::Release);
-                }
-            }
-            if let Ok(mut lock) = is_done_writer.write() {
-                *lock = true;
-                is_changed_writer.store(true, Ordering::Release);
-            }
-            notify_writer.notify_one();
-        });
-
-        self
-    }
-
-    // --- Spinner Styling Methods ---
-
-    /// sets the visual style of the spinner animation.
+    /// Sets the visual style of the spinner animation.
     pub fn spinner_style(mut self, style: SpinnerStyle) -> Self {
         self.inner.spinner_style = style;
         self
     }
 
-    /// sets the color of the spinner animation.
+    /// Sets the color of the spinner animation.
     pub fn spinner_color(mut self, color: Color) -> Self {
         self.inner.spinner_color = Some(color);
         self
     }
 
-    // --- Markdown Styling Methods ---
-
-    /// Enables/disables markdown highlight
     #[cfg(feature = "markdown")]
     pub fn markdown(mut self, enable: bool) -> Self {
         if enable && self.inner.markdown.is_none() {
@@ -205,9 +129,8 @@ impl Block<Text> {
         self
     }
 
-    /// Applies a unified color theme to the spinner and all Markdown elements.
     #[cfg(feature = "markdown")]
-    pub fn color(mut self, color: Color) -> Self {
+    pub fn accent_color(mut self, color: Color) -> Self {
         if let Some(md) = self.inner.markdown {
             self.inner.markdown =
                 Some(md.stripe_color(color).bullet_color(color).code_color(color));
@@ -216,7 +139,6 @@ impl Block<Text> {
         self
     }
 
-    /// Sets the stripe style for Markdown blockquotes.
     #[cfg(feature = "markdown")]
     pub fn stripe_style(mut self, style: StripeStyle) -> Self {
         let md = self.inner.markdown.unwrap_or_default();
@@ -224,7 +146,6 @@ impl Block<Text> {
         self
     }
 
-    /// Sets the stripe color for Markdown blockquotes.
     #[cfg(feature = "markdown")]
     pub fn stripe_color(mut self, color: Color) -> Self {
         let md = self.inner.markdown.unwrap_or_default();
@@ -232,7 +153,6 @@ impl Block<Text> {
         self
     }
 
-    /// Sets the bullet style for Markdown lists.
     #[cfg(feature = "markdown")]
     pub fn bullet_style(mut self, style: BulletStyle) -> Self {
         let md = self.inner.markdown.unwrap_or_default();
@@ -240,7 +160,6 @@ impl Block<Text> {
         self
     }
 
-    /// Sets the bullet color for Markdown lists.
     #[cfg(feature = "markdown")]
     pub fn bullet_color(mut self, color: Color) -> Self {
         let md = self.inner.markdown.unwrap_or_default();
@@ -248,7 +167,6 @@ impl Block<Text> {
         self
     }
 
-    /// Sets the color for inline code blocks in Markdown.
     #[cfg(feature = "markdown")]
     pub fn code_color(mut self, color: Color) -> Self {
         let md = self.inner.markdown.unwrap_or_default();
@@ -256,7 +174,6 @@ impl Block<Text> {
         self
     }
 
-    /// Sets the syntax highlighting theme for code blocks in Markdown.
     #[cfg(all(feature = "markdown", feature = "highlight"))]
     pub fn code_theme(mut self, theme: CodeTheme) -> Self {
         let md = self.inner.markdown.unwrap_or_default();
@@ -266,52 +183,34 @@ impl Block<Text> {
 }
 
 impl Widget for Text {
-    type Output = String;
+    type State = String;
+    type Output = ();
+    type Event = ();
 
-    /// Checks whether the widget needs to be re-rendered on screen.
-    fn is_changed(&self) -> bool {
-        // 1. Content, scroll, or window resize changes
-        if self.is_changed.load(Ordering::Acquire) {
-            return true;
-        }
-
-        // 2. If spinner is active — a frame is required to advance frame_idx
-        let is_done = *self.is_done.read().unwrap_or_else(|e| e.into_inner());
-        !is_done && self.spinner_style != SpinnerStyle::None
-    }
-
-    /// Handles terminal window resize events by signaling a state change.
-    fn on_resize(&mut self, _rows: u16, _cols: u16) {
+    fn on_resize(&mut self, _cols: u16, _rows: u16) {
         self.is_changed.store(true, Ordering::Release);
     }
 
-    /// Renders the prefix, dynamic content, and spinner animation into terminal line strings.
-    fn render_content(
+    fn render_frame(
         &mut self,
+        state: &Arc<Self::State>,
         max_width: Option<usize>,
         _max_height: Option<usize>,
+        is_final: bool,
     ) -> Vec<String> {
-        // reset change flag during actual rendering
         self.is_changed.store(false, Ordering::Release);
 
-        let is_done = *self.is_done.read().unwrap_or_else(|e| e.into_inner());
-        let spinner_active = !is_done && self.spinner_style != SpinnerStyle::None;
+        let raw_dynamic_text = state.as_str();
 
-        let raw_dynamic_text = self
-            .state
-            .read()
-            .map(|s| s.clone())
-            .unwrap_or_else(|e| e.into_inner().clone());
-
-        // construct spinner icon string
-        let spinner_str = if spinner_active {
+        let spinner_str = if is_final {
+            String::new()
+        } else if self.spinner_style != SpinnerStyle::None {
             let frames = self.spinner_style.frames();
             if frames.is_empty() {
                 String::new()
             } else {
-                let mut frame_idx = self.frame_idx.write().unwrap_or_else(|e| e.into_inner());
-                let raw_icon = frames[*frame_idx % frames.len()];
-                *frame_idx = frame_idx.wrapping_add(1);
+                let raw_icon = frames[self.frame_idx % frames.len()];
+                self.frame_idx = self.frame_idx.wrapping_add(1);
 
                 let styled_icon = if let Some(color) = self.spinner_color {
                     raw_icon.with(color).to_string()
@@ -332,7 +231,6 @@ impl Widget for Text {
         let mut prefix_max_width = 0;
         let mut has_prefix_content = false;
 
-        // a helper function for generating a prefix strip for empty/indented strings.
         let get_sideline_prefix = || {
             if let Some(ch) = get_stripe_char(self.prefix_stripe) {
                 let s = format!("{} ", ch);
@@ -347,7 +245,7 @@ impl Widget for Text {
             }
         };
 
-        // 1. Render static prefix (plain text)
+        // 1. Static Prefix
         if !self.static_prefix.is_empty() {
             let sideline_prefix = get_sideline_prefix();
             let sideline_w = ansi::visible_width(&sideline_prefix);
@@ -359,14 +257,11 @@ impl Widget for Text {
                 .replace('\t', "    ");
 
             let target_width = max_width.map(|w| w.saturating_sub(sideline_w));
-
             let mut prefix_lines = Vec::new();
             let mut active_ansi = String::new();
 
             for raw_line in normalized.split('\n') {
-                // insert the current saved ANSI color before each new line from \n.
                 let line_with_color = format!("{}{}", active_ansi, raw_line);
-
                 let wrapped_sublines = match target_width {
                     Some(w) if w > 0 => ansi::wrap_terminal_text(&line_with_color, w),
                     _ => vec![line_with_color],
@@ -374,13 +269,11 @@ impl Widget for Text {
 
                 for subline in wrapped_sublines {
                     if !subline.is_empty() {
-                        // update the current active color using ansi::get_active_text_color.
                         if let Some(color) = ansi::get_active_text_color(&subline) {
                             active_ansi = color;
                         }
                         prefix_lines.push(subline);
                     } else {
-                        // an empty substring retains the active color.
                         prefix_lines.push(active_ansi.clone());
                     }
                 }
@@ -400,7 +293,7 @@ impl Widget for Text {
             }
         }
 
-        // 1.5. Render separator line
+        // 1.5. Prefix Line
         if self.prefix_line != LineStyle::None
             && !self.static_prefix.is_empty()
             && prefix_max_width > 0
@@ -408,7 +301,6 @@ impl Widget for Text {
             has_prefix_content = true;
             let line_symbol = self.prefix_line.as_char();
 
-            // if max_width is specified, limit the length of the delimiter; otherwise, use the width of the prefix.
             let underline_len = match max_width {
                 Some(w) => prefix_max_width.min(w),
                 None => prefix_max_width,
@@ -437,7 +329,7 @@ impl Widget for Text {
             lines.push(line_str);
         }
 
-        // 1.8. Render prefix_margin
+        // 1.8. Prefix Margin
         if has_prefix_content && self.prefix_margin > 0 {
             let margin_line = get_sideline_prefix();
             for _ in 0..self.prefix_margin {
@@ -445,7 +337,7 @@ impl Widget for Text {
             }
         }
 
-        // 2. Render spinner and dynamic text
+        // 2. Dynamic Content
         let content_lines: Vec<String> = match max_width {
             Some(w) => {
                 let available_content_width = w.saturating_sub(spinner_width);
@@ -455,7 +347,7 @@ impl Widget for Text {
                     #[cfg(feature = "markdown")]
                     {
                         if let Some(md) = &self.markdown {
-                            let rendered = md.render(&raw_dynamic_text, available_content_width);
+                            let rendered = md.render(raw_dynamic_text, available_content_width);
                             let trimmed = rendered.trim_end_matches(|c| c == '\r' || c == '\n');
                             if trimmed.is_empty() {
                                 Vec::new()
@@ -463,19 +355,16 @@ impl Widget for Text {
                                 trimmed.lines().map(|s| s.to_string()).collect()
                             }
                         } else {
-                            ansi::wrap_terminal_text(&raw_dynamic_text, available_content_width)
+                            ansi::wrap_terminal_text(raw_dynamic_text, available_content_width)
                         }
                     }
                     #[cfg(not(feature = "markdown"))]
                     {
-                        ansi::wrap_terminal_text(&raw_dynamic_text, available_content_width)
+                        ansi::wrap_terminal_text(raw_dynamic_text, available_content_width)
                     }
                 }
             }
-            None => {
-                // max_width == None: don’t wrap the text to fit the width; simply split it at line breaks \n
-                raw_dynamic_text.lines().map(|s| s.to_string()).collect()
-            }
+            None => raw_dynamic_text.lines().map(|s| s.to_string()).collect(),
         };
 
         let mut dyn_rendered_lines = Vec::new();
@@ -500,36 +389,35 @@ impl Widget for Text {
             lines.pop();
         }
 
+        if self.scroll_offset > 0 && self.scroll_offset < lines.len() {
+            lines.drain(0..self.scroll_offset);
+        }
+
         lines
     }
 
-    /// Processes keyboard navigation events for scrolling the content.
     fn handle_key(&mut self, key: KeyEvent) {
-        let mut scroll = self
-            .scroll_offset
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
         let mut moved = false;
 
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                if *scroll > 0 {
-                    *scroll -= 1;
+                if self.scroll_offset > 0 {
+                    self.scroll_offset -= 1;
                     moved = true;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                *scroll += 1;
+                self.scroll_offset += 1;
                 moved = true;
             }
             KeyCode::PageUp => {
-                if *scroll > 0 {
-                    *scroll = scroll.saturating_sub(5);
+                if self.scroll_offset > 0 {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(5);
                     moved = true;
                 }
             }
             KeyCode::PageDown => {
-                *scroll += 5;
+                self.scroll_offset += 5;
                 moved = true;
             }
             _ => {}
@@ -540,21 +428,11 @@ impl Widget for Text {
         }
     }
 
-    /// returns whether the background execution task has completed.
-    fn is_finished(&self) -> bool {
-        *self.is_done.read().unwrap_or_else(|e| e.into_inner())
+    fn extract_output(&mut self) -> Self::Output {
+        ()
     }
 
-    /// extracts the final string payload stored inside the widget.
-    fn extract_output(self) -> Self::Output {
-        self.state
-            .read()
-            .map(|s| s.clone())
-            .unwrap_or_else(|e| e.into_inner().clone())
-    }
-
-    /// indicates whether the terminal cursor should be visible during rendering.
-    fn show_cursor(&self) -> bool {
-        false
+    fn is_changed(&self) -> bool {
+        self.spinner_style != SpinnerStyle::None
     }
 }

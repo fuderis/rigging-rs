@@ -1,18 +1,22 @@
 use crate::render::{block::Block, widget::Widget};
-#[cfg(feature = "buffer")]
-use atoman::prelude::*;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-#[cfg(feature = "buffer")]
-use std::{collections::HashMap, sync::Arc};
 use std::{
     fmt::Display,
+    sync::Arc,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use unicode_width::UnicodeWidthStr;
 
+#[cfg(feature = "buffer")]
+use std::{collections::HashMap, sync::LazyLock};
+#[cfg(feature = "buffer")]
+use tokio::sync::Mutex;
+
 /// Global storage for command histories separated by buffer ID (`u64`).
 #[cfg(feature = "buffer")]
-static COMMAND_HISTORIES: State<HashMap<u64, Vec<Arc<String>>>> = State::new(HashMap::new);
+static COMMAND_HISTORIES: LazyLock<Mutex<HashMap<u64, Vec<Arc<String>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// A text input widget supporting single-line and multi-line modes, secret masking,
 /// scrolling, and command history buffers.
@@ -58,7 +62,7 @@ pub struct Input {
 }
 
 impl Input {
-    /// Creates a new `Input` widget wrapped inside a [`Block`].
+    /// Creates a new `Input` widget wrapped inside a [`Block`] with internal [`String`] state.
     pub fn new() -> Block<Self> {
         let input = Self {
             default: None,
@@ -82,17 +86,17 @@ impl Input {
             saved_draft: String::new(),
         };
 
-        Block::new(input)
+        Block::new(input, ())
     }
 
     /// Clears the history buffer associated with the specified `id`.
     #[cfg(feature = "buffer")]
-    pub fn remove_buffer(id: u64) {
-        let mut histories = COMMAND_HISTORIES.dirty_lock();
+    pub async fn remove_buffer(id: u64) {
+        let mut histories = COMMAND_HISTORIES.lock().await;
         histories.remove(&id);
     }
 
-    /// Saves current input to history if `buffer_id` is specified and string starts with `/`.
+    /// Saves current input to history if `buffer_id` is specified and text is non-empty.
     #[cfg(feature = "buffer")]
     fn save_to_history(&self) {
         let buffer_id = match self.buffer_id {
@@ -101,24 +105,27 @@ impl Input {
         };
 
         let full_text = self.lines.join("\n");
-        let trimmed = full_text.trim();
+        let trimmed = full_text.trim().to_string();
 
-        if trimmed.starts_with('/') {
-            let mut histories = COMMAND_HISTORIES.dirty_lock();
-            let history = histories.entry(buffer_id).or_default();
+        if !trimmed.is_empty() {
+            let limit = self.buffer_limit;
+            tokio::spawn(async move {
+                let mut histories = COMMAND_HISTORIES.lock().await;
+                let history = histories.entry(buffer_id).or_default();
 
-            // avoid consecutive duplicate entries
-            if history.last().map_or(true, |last| last.as_str() != trimmed) {
-                history.push(Arc::new(trimmed.to_string()));
+                // avoid consecutive duplicate entries
+                if history.last().map_or(true, |last| last.as_str() != trimmed) {
+                    history.push(Arc::new(trimmed));
 
-                // enforce capacity limits on history buffer
-                if let Some(limit) = self.buffer_limit {
-                    if limit > 0 && history.len() > limit {
-                        let drain_count = history.len() - limit;
-                        history.drain(0..drain_count);
+                    // enforce capacity limits on history buffer
+                    if let Some(limit) = limit {
+                        if limit > 0 && history.len() > limit {
+                            let drain_count = history.len() - limit;
+                            history.drain(0..drain_count);
+                        }
                     }
                 }
-            }
+            });
         }
     }
 
@@ -192,20 +199,26 @@ impl Input {
 }
 
 impl Widget for Input {
+    type State = ();
     type Output = String;
+    type Event = ();
 
     fn is_finished(&self) -> bool {
         self.finished
     }
 
-    fn on_resize(&mut self, _rows: u16, _cols: u16) {
+    fn is_changed(&self) -> bool {
+        self.is_changed
+    }
+
+    fn on_resize(&mut self, _cols: u16, _rows: u16) {
         self.is_changed = true;
     }
 
-    fn extract_output(self) -> Self::Output {
+    fn extract_output(&mut self) -> Self::Output {
         let res = self.lines.join("\n").trim().to_string();
         if res.is_empty() {
-            self.default.unwrap_or_default()
+            self.default.clone().unwrap_or_default()
         } else {
             res
         }
@@ -295,44 +308,45 @@ impl Widget for Input {
                 };
 
                 if can_navigate {
-                    let histories = COMMAND_HISTORIES.dirty_get();
-                    if let Some(history) = histories.get(&buffer_id) {
-                        if !history.is_empty() {
-                            if is_up {
-                                match self.history_idx {
-                                    None => {
-                                        self.saved_draft = self.lines.join("\n");
-                                        let new_idx = history.len() - 1;
-                                        self.history_idx = Some(new_idx);
-                                        self.lines = vec![history[new_idx].to_string()];
+                    if let Ok(histories) = COMMAND_HISTORIES.try_lock() {
+                        if let Some(history) = histories.get(&buffer_id) {
+                            if !history.is_empty() {
+                                if is_up {
+                                    match self.history_idx {
+                                        None => {
+                                            self.saved_draft = self.lines.join("\n");
+                                            let new_idx = history.len() - 1;
+                                            self.history_idx = Some(new_idx);
+                                            self.lines = vec![history[new_idx].to_string()];
+                                        }
+                                        Some(idx) if idx > 0 => {
+                                            let new_idx = idx - 1;
+                                            self.history_idx = Some(new_idx);
+                                            self.lines = vec![history[new_idx].to_string()];
+                                        }
+                                        _ => {}
                                     }
-                                    Some(idx) if idx > 0 => {
-                                        let new_idx = idx - 1;
-                                        self.history_idx = Some(new_idx);
-                                        self.lines = vec![history[new_idx].to_string()];
+                                } else if is_down {
+                                    if let Some(idx) = self.history_idx {
+                                        if idx + 1 < history.len() {
+                                            let new_idx = idx + 1;
+                                            self.history_idx = Some(new_idx);
+                                            self.lines = vec![history[new_idx].to_string()];
+                                        } else {
+                                            self.history_idx = None;
+                                            self.lines = self
+                                                .saved_draft
+                                                .split('\n')
+                                                .map(String::from)
+                                                .collect();
+                                        }
                                     }
-                                    _ => {}
                                 }
-                            } else if is_down {
-                                if let Some(idx) = self.history_idx {
-                                    if idx + 1 < history.len() {
-                                        let new_idx = idx + 1;
-                                        self.history_idx = Some(new_idx);
-                                        self.lines = vec![history[new_idx].to_string()];
-                                    } else {
-                                        self.history_idx = None;
-                                        self.lines = self
-                                            .saved_draft
-                                            .split('\n')
-                                            .map(String::from)
-                                            .collect();
-                                    }
-                                }
-                            }
 
-                            self.cursor_line = self.lines.len() - 1;
-                            self.cursor_col = char_count(&self.lines[self.cursor_line]);
-                            return;
+                                self.cursor_line = self.lines.len() - 1;
+                                self.cursor_col = char_count(&self.lines[self.cursor_line]);
+                                return;
+                            }
                         }
                     }
                 }
@@ -420,11 +434,11 @@ impl Widget for Input {
                 let target_col = self.cursor_col.min(chars.len());
 
                 let mut new_col = target_col;
-                // Пропускаем пробелы слева от курсора
+                // skip spaces to the left of the cursor
                 while new_col > 0 && chars[new_col - 1].is_whitespace() {
                     new_col -= 1;
                 }
-                // Пропускаем сам слово-блок
+                // skip word block itself
                 while new_col > 0 && !chars[new_col - 1].is_whitespace() {
                     new_col -= 1;
                 }
@@ -455,14 +469,12 @@ impl Widget for Input {
         }
     }
 
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
-
-    fn render_content(
+    fn render_frame(
         &mut self,
+        _state: &Arc<()>,
         max_width: Option<usize>,
         max_height: Option<usize>,
+        _is_final: bool,
     ) -> Vec<String> {
         let width = max_width.unwrap_or(usize::MAX);
         let visible_height = if self.multiline {
@@ -508,10 +520,6 @@ impl Widget for Input {
     fn cursor_position(&self) -> Option<(usize, usize)> {
         Some((self.cursor_rel_x(), self.cursor_rel_y()))
     }
-
-    fn show_cursor(&self) -> bool {
-        true
-    }
 }
 
 impl Block<Input> {
@@ -540,15 +548,6 @@ impl Block<Input> {
     }
 
     /// Enables history buffer for the input using the provided `id` and optional entry limit.
-    ///
-    /// # Example
-    /// ```rust
-    /// // Without entry limit:
-    /// Input::new().use_buffer(1, None);
-    ///
-    /// // Limited to the 50 most recent commands:
-    /// Input::new().use_buffer(1, Some(50));
-    /// ```
     #[cfg(feature = "buffer")]
     pub fn use_buffer(mut self, id: u64, limit: Option<usize>) -> Self {
         self.inner.buffer_id = Some(id);

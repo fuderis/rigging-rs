@@ -1,6 +1,6 @@
 use crate::{
-    render::ansi,
     style::{BulletStyle, StripeStyle},
+    utils::ansi,
 };
 
 #[cfg(feature = "highlight")]

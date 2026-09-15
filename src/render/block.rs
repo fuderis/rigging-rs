@@ -1,6 +1,14 @@
-use super::{ansi, widget::Widget};
-use crate::style::{Align, BorderStyle, Margin, Padding, Title};
+use super::{
+    context::{Command, Context, SubWidgetPosition},
+    guard::TerminalGuard,
+    widget::Widget,
+};
+use crate::{
+    style::{Align, BorderStyle, Margin, Padding, Title},
+    utils::ansi,
+};
 
+use atoman::State;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -14,118 +22,87 @@ use std::{
     io::{self, BufWriter, Write},
     time::Duration,
 };
+use tokio::sync::mpsc;
 use tokio::time::interval;
 
-/// An RAII guard for managing terminal state and cursor visibility.
-///
-/// Enables terminal raw mode and configures line wrapping and cursor visibility
-/// upon creation. Restores normal terminal state when dropped.
-pub(crate) struct TerminalGuard;
-
-impl TerminalGuard {
-    /// Creates a new `TerminalGuard` instance and configures initial terminal mode.
-    ///
-    /// # Arguments
-    ///
-    /// * `show_cursor` - Whether the terminal cursor should remain visible.
-    pub(crate) fn new(show_cursor: bool) -> Self {
-        let mut stdout = io::stdout();
-
-        let _ = terminal::enable_raw_mode();
-        let _ = queue!(stdout, crossterm::terminal::DisableLineWrap);
-
-        if show_cursor {
-            let _ = queue!(stdout, cursor::Show);
-        } else {
-            let _ = queue!(stdout, cursor::Hide);
-        }
-
-        let _ = stdout.flush();
-        Self
-    }
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let mut stdout = io::stdout();
-        let _ = terminal::disable_raw_mode();
-
-        let _ = queue!(stdout, crossterm::terminal::EnableLineWrap);
-        let _ = queue!(stdout, cursor::Show);
-
-        let _ = stdout.flush();
-    }
-}
-
-/// A cache entry for rendered top or bottom border lines.
+/// Cache for horizontal borders.
 #[derive(Default)]
 struct CachedBorder {
-    /// Cache key consisting of (width, border style, border color, background color).
     key: (usize, BorderStyle, Option<Color>, Option<Color>),
-    /// Pre-rendered ANSI string of the border line.
     line: String,
 }
 
-/// A wrapper container widget providing borders, titles, padding, margin, and event routing.
-///
-/// `Block` wraps an inner widget implementing [`Widget`], managing layout constraints,
-/// styling options, background coloring, dynamic terminal rendering, and event loops.
+/// Widget wrapper with built-in styling and rendering methods.
 pub struct Block<W: Widget> {
-    /// The inner widget wrapped by this container.
+    /// Inner widget.
     pub inner: W,
-    /// Collection of titles to display on the block's borders.
+    /// Widget state (controlled by user handler).
+    pub state: atoman::State<W::State>,
+    /// Set to true if widget has handler.
+    pub has_handler: bool,
+
+    /// State of freezing redrawing.
+    pub is_frozen: bool,
+    /// Forced completion flag.
+    pub is_finished_signal: bool,
+    /// Terminal cursor display flag.
+    pub show_cursor: bool,
+
+    // --- Render Channels ---
+    cmd_tx: mpsc::UnboundedSender<Command>,
+    cmd_rx: mpsc::UnboundedReceiver<Command>,
+    event_tx: mpsc::UnboundedSender<W::Event>,
+    event_rx: mpsc::UnboundedReceiver<W::Event>,
+
+    // --- Widget Stylization ---
     pub titles: Vec<Title>,
-    /// Border style configuration.
     pub border: BorderStyle,
-    /// Color applied to the border characters.
     pub border_color: Option<Color>,
-    /// Background color for the inner content and padding area.
     pub bg_color: Option<Color>,
-    /// Color used during completion flash/blink animation.
     pub blink_color: Option<Color>,
-    /// Duration of the completion flash/blink animation.
     pub blink_duration: Duration,
-    /// Outer margin surrounding the block.
     pub margin: Margin,
-    /// Inner padding between the border and the inner content.
     pub padding: Padding,
-    /// Whether to clear rendered terminal output after completion.
     pub remove_on_finish: bool,
 
-    /// Minimum constraint for content width.
     pub min_width: Option<usize>,
-    /// Maximum constraint for content width.
     pub max_width: Option<usize>,
-    /// Minimum constraint for content height.
     pub min_height: Option<usize>,
-    /// Maximum constraint for content height.
     pub max_height: Option<usize>,
-    /// Truncates the lines by width
     pub truncate_lines: bool,
 
-    /// Disables rendering of the top border line.
     pub no_top_border: bool,
-    /// Disables rendering of the bottom border line.
     pub no_bottom_border: bool,
 
-    /// Cached top border line to avoid redundant formatting.
     cached_top_border: Option<CachedBorder>,
-    /// Cached bottom border line to avoid redundant formatting.
     cached_bottom_border: Option<CachedBorder>,
-    /// Buffer holding lines from the previously rendered frame.
     last_rendered_frame: Option<Vec<String>>,
 
-    /// Optional key event handler callback.
     pub(crate) on_key: Option<Box<dyn for<'a> FnMut(&'a mut W, KeyEvent) + Send + Sync + 'static>>,
-    /// Optional custom exit handler callback triggered on termination (e.g. Ctrl+C).
     pub(crate) on_exit: Option<Box<dyn FnMut() + Send + Sync + 'static>>,
 }
 
 impl<W: Widget> Block<W> {
-    /// Creates a new `Block` container wrapping the specified inner widget with default styling.
-    pub fn new(inner: W) -> Self {
+    /// Creates new `Block` with specified widget and initial state.
+    pub fn new(inner: W, initial_state: W::State) -> Self {
+        let state = State::from(initial_state);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+
         Self {
             inner,
+            state,
+            has_handler: false,
+
+            cmd_tx,
+            cmd_rx,
+            event_tx,
+            event_rx,
+
+            is_frozen: false,
+            is_finished_signal: false,
+            show_cursor: false,
+
             titles: Vec::new(),
             border: BorderStyle::None,
             border_color: None,
@@ -157,9 +134,43 @@ impl<W: Widget> Block<W> {
         }
     }
 
+    /// Registers asynchronous user handler.
+    ///
+    /// A `Context` is passed to the task, which owns the `StateGuard` for the lifetime of the context.
+    pub fn handler<F, Fut>(mut self, f: F) -> Self
+    where
+        F: FnOnce(Context<W::State, W::Event>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        if self.has_handler {
+            panic!("There is already a handler: allowed only one rendering handler!");
+        }
+        self.has_handler = true;
+
+        let state_clone = self.state.clone();
+        let cmd_tx = self.cmd_tx.clone();
+        let event_tx = self.event_tx.clone();
+
+        tokio::spawn(async move {
+            let guard = state_clone.lock().await;
+            let ctx = Context {
+                state: guard,
+                tx: cmd_tx,
+                event_tx,
+            };
+            f(ctx).await;
+        });
+
+        self
+    }
+
     // --- Fluent Builders ---
 
-    /// Sets a closure to handle keyboard input events.
+    pub fn show_cursor(mut self, show: bool) -> Self {
+        self.show_cursor = show;
+        self
+    }
+
     pub fn on_key<F>(mut self, f: F) -> Self
     where
         F: FnMut(&mut W, KeyEvent) + Send + Sync + 'static,
@@ -168,7 +179,6 @@ impl<W: Widget> Block<W> {
         self
     }
 
-    /// Sets a callback function executed upon user interruption or exit.
     pub fn on_exit<F>(mut self, f: F) -> Self
     where
         F: FnMut() + Send + Sync + 'static,
@@ -177,69 +187,58 @@ impl<W: Widget> Block<W> {
         self
     }
 
-    /// Sets fixed width constraints (`min_width` and `max_width`).
     pub fn width(mut self, width: usize) -> Self {
         self.min_width = Some(width);
         self.max_width = Some(width);
         self
     }
 
-    /// Sets the minimum allowable width for the block.
     pub fn min_width(mut self, width: usize) -> Self {
         self.min_width = Some(width);
         self
     }
 
-    /// Sets the maximum allowable width for the block.
     pub fn max_width(mut self, width: usize) -> Self {
         self.max_width = Some(width);
         self
     }
 
-    /// Sets fixed height constraints (`min_height` and `max_height`).
     pub fn height(mut self, height: usize) -> Self {
         self.min_height = Some(height);
         self.max_height = Some(height);
         self
     }
 
-    /// Sets the minimum allowable height for the block.
     pub fn min_height(mut self, height: usize) -> Self {
         self.min_height = Some(height);
         self
     }
 
-    /// Sets the maximum allowable height for the block.
     pub fn max_height(mut self, height: usize) -> Self {
         self.max_height = Some(height);
         self
     }
 
-    /// Enables/disabled the line truncate by max available width.
     pub fn truncate_lines(mut self, enable: bool) -> Self {
         self.truncate_lines = enable;
         self
     }
 
-    /// Specifies whether terminal lines rendered by the widget should be erased after execution finishes.
     pub fn clear_after(mut self, clear: bool) -> Self {
         self.remove_on_finish = clear;
         self
     }
 
-    /// Toggles rendering of the top border line.
     pub fn no_top_border(mut self, hide: bool) -> Self {
         self.no_top_border = hide;
         self
     }
 
-    /// Toggles rendering of the bottom border line.
     pub fn no_bottom_border(mut self, hide: bool) -> Self {
         self.no_bottom_border = hide;
         self
     }
 
-    /// Adds a title to the block border with specified alignment.
     pub fn title(mut self, title: impl Display, align: Align) -> Self {
         self.titles.push(Title {
             text: title.to_string(),
@@ -248,137 +247,116 @@ impl<W: Widget> Block<W> {
         self
     }
 
-    /// Sets the background color of the block.
-    pub fn background(mut self, color: Color) -> Self {
+    pub fn background_color(mut self, color: Color) -> Self {
         self.bg_color = Some(color);
         self.invalidate_border_cache();
         self
     }
 
-    /// Sets the target color for the completion flash/blink animation.
     pub fn blink_color(mut self, color: Color) -> Self {
         self.blink_color = Some(color);
         self
     }
 
-    /// Sets the total duration of the completion flash/blink animation.
     pub fn blink_duration(mut self, duration: Duration) -> Self {
         self.blink_duration = duration;
         self
     }
 
-    /// Sets inner content padding.
     pub fn padding(mut self, padding: Padding) -> Self {
         self.padding = padding;
         self
     }
 
-    /// Sets outer block top & bottom padding.
     pub fn padding_ver(mut self, padding: usize) -> Self {
         self.padding.top = padding;
         self.padding.bottom = padding;
         self
     }
 
-    /// Sets outer block left & right padding.
     pub fn padding_hor(mut self, padding: usize) -> Self {
         self.padding.left = padding;
         self.padding.right = padding;
         self
     }
 
-    /// Sets inner content top padding.
     pub fn padding_top(mut self, padding: usize) -> Self {
         self.padding.top = padding;
         self
     }
 
-    /// Sets inner content right padding.
     pub fn padding_right(mut self, padding: usize) -> Self {
         self.padding.right = padding;
         self
     }
 
-    /// Sets inner content bottom padding.
     pub fn padding_bottom(mut self, padding: usize) -> Self {
         self.padding.bottom = padding;
         self
     }
 
-    /// Sets inner content left padding.
     pub fn padding_left(mut self, padding: usize) -> Self {
         self.padding.left = padding;
         self
     }
 
-    /// Sets outer block margin.
     pub fn margin(mut self, margin: Margin) -> Self {
         self.margin = margin;
         self
     }
 
-    /// Sets outer block top & bottom margin.
     pub fn margin_ver(mut self, margin: usize) -> Self {
         self.margin.top = margin;
         self.margin.bottom = margin;
         self
     }
 
-    /// Sets outer block left & right margin.
     pub fn margin_hor(mut self, margin: usize) -> Self {
         self.margin.left = margin;
         self.margin.right = margin;
         self
     }
 
-    /// Sets outer block top margin.
     pub fn margin_top(mut self, margin: usize) -> Self {
         self.margin.top = margin;
         self
     }
 
-    /// Sets outer block right margin.
     pub fn margin_right(mut self, margin: usize) -> Self {
         self.margin.right = margin;
         self
     }
 
-    /// Sets outer block bottom margin.
     pub fn margin_bottom(mut self, margin: usize) -> Self {
         self.margin.bottom = margin;
         self
     }
 
-    /// Sets outer block left margin.
     pub fn margin_left(mut self, margin: usize) -> Self {
         self.margin.left = margin;
         self
     }
 
-    /// Sets the border style for the container.
-    pub fn border(mut self, border: BorderStyle) -> Self {
+    pub fn border_style(mut self, border: BorderStyle) -> Self {
         self.border = border;
         self.invalidate_border_cache();
         self
     }
 
-    /// Sets the foreground color of the borders.
     pub fn border_color(mut self, color: Color) -> Self {
         self.border_color = Some(color);
         self.invalidate_border_cache();
         self
     }
 
-    /// Invalidates cached top and bottom border strings.
     #[inline]
     fn invalidate_border_cache(&mut self) {
         self.cached_top_border = None;
         self.cached_bottom_border = None;
     }
 
-    // --- Calculations ---
+    // --- Size Calculations & Formatting ---
 
-    /// Calculates vertical overhead introduced by borders and padding.
     #[inline]
     pub fn vertical_overhead(&self) -> usize {
         let has_border = !matches!(self.border, BorderStyle::None);
@@ -386,7 +364,6 @@ impl<W: Widget> Block<W> {
         border_y + self.padding.top + self.padding.bottom
     }
 
-    /// Calculates horizontal overhead introduced by borders, margin, and padding.
     #[inline]
     pub fn horizontal_overhead(&self) -> usize {
         let has_border = !matches!(self.border, BorderStyle::None);
@@ -394,11 +371,8 @@ impl<W: Widget> Block<W> {
         border_x + self.margin.left + self.margin.right + self.padding.left + self.padding.right
     }
 
-    /// Computes the terminal cursor coordinate offset relative to top-left of the block frame.
-    ///
-    /// Returns `None` if the inner widget requests to hide the cursor or does not define cursor coordinates.
     pub fn calculate_cursor_offset(&self) -> Option<(u16, u16)> {
-        if !self.inner.show_cursor() {
+        if !self.show_cursor {
             return None;
         }
 
@@ -410,21 +384,16 @@ impl<W: Widget> Block<W> {
             .any(|t| matches!(t.align, Align::TopLeft | Align::TopCenter | Align::TopRight));
         let has_top_line =
             !self.no_top_border && (self.border != BorderStyle::None || has_top_titles);
-
         let has_left_border = self.border != BorderStyle::None;
 
         let cursor_x =
             self.margin.left + if has_left_border { 1 } else { 0 } + self.padding.left + rel_x;
-
         let cursor_y =
             self.margin.top + if has_top_line { 1 } else { 0 } + self.padding.top + rel_y;
 
         Some((cursor_x as u16, cursor_y as u16))
     }
 
-    // --- Formatting Helpers ---
-
-    /// Appends repeated character instances to a buffer string.
     #[inline]
     fn write_repeat_char(buf: &mut String, ch: char, count: usize) {
         for _ in 0..count {
@@ -432,7 +401,6 @@ impl<W: Widget> Block<W> {
         }
     }
 
-    /// Applies configured background color ANSI escape sequences to the target text buffer.
     fn apply_bg_to_buf(&self, text: &str, buf: &mut String) {
         let Some(bg) = self.bg_color else {
             buf.push_str(text);
@@ -475,7 +443,6 @@ impl<W: Widget> Block<W> {
         buf.push_str("\x1b[49m");
     }
 
-    /// Formats a single top or bottom horizontal border line including aligned titles.
     fn render_border_line(
         &self,
         left_corner: char,
@@ -573,7 +540,6 @@ impl<W: Widget> Block<W> {
         out
     }
 
-    /// Fetches a cached border line or constructs and caches a new one if key parameter state changed.
     fn get_cached_border(&mut self, is_top: bool, inner_w: usize, border_col: Color) -> String {
         let key = (inner_w, self.border, self.border_color, self.bg_color);
 
@@ -624,14 +590,14 @@ impl<W: Widget> Block<W> {
         line
     }
 
-    /// Renders a complete terminal frame constrained to available width and viewport bounds.
-    ///
-    /// Returns a vector of strings representing each line of the formatted terminal view.
     pub fn render_frame_with_viewport(
         &mut self,
         available_width: usize,
         viewport_height: Option<usize>,
+        is_final: bool,
     ) -> Vec<String> {
+        let state_arc = self.state.get();
+
         let pad = self.padding;
         let mar = self.margin;
         let border_col = self.border_color.unwrap_or(Color::DarkGrey);
@@ -664,7 +630,6 @@ impl<W: Widget> Block<W> {
             max_allowed_inner = max_allowed_inner.min(user_max_content);
         }
 
-        // calculate max available height
         let vert_overhead = mar.top
             + mar.bottom
             + pad.top
@@ -677,23 +642,22 @@ impl<W: Widget> Block<W> {
             .or(viewport_height)
             .map(|h| h.saturating_sub(vert_overhead));
 
-        // fetch content lines from wrapped inner widget
-        let raw_lines = self.inner.render_content(
+        let raw_lines = self.inner.render_frame(
+            &state_arc,
             if self.truncate_lines {
                 None
             } else {
                 Some(max_allowed_inner)
             },
             max_text_rows,
+            is_final,
         );
 
-        // split them down by \n into a flat list.
         let mut content_lines = Vec::with_capacity(raw_lines.len());
         for line in raw_lines {
             content_lines.extend(line.split('\n').map(str::to_owned));
         }
 
-        // trim BY HEIGHT, leaving the LAST lines (tail).
         let effective_max_h = self.max_height.or(viewport_height);
         if let Some(max_h) = effective_max_h {
             let max_text_rows = max_h.saturating_sub(vert_overhead);
@@ -703,29 +667,11 @@ impl<W: Widget> Block<W> {
             }
         }
 
-        // calculate the actual width AFTER the unnecessary top lines have been trimmed.
         let actual_content_w = content_lines
             .iter()
             .map(|l| ansi::visible_width(l))
             .max()
             .unwrap_or(0);
-
-        let vert_overhead = mar.top
-            + mar.bottom
-            + pad.top
-            + pad.bottom
-            + if has_top_line { 1 } else { 0 }
-            + if has_bot_line { 1 } else { 0 };
-
-        let effective_max_h = self.max_height.or(viewport_height);
-
-        if let Some(max_h) = effective_max_h {
-            let max_text_rows = max_h.saturating_sub(vert_overhead);
-            if content_lines.len() > max_text_rows {
-                let start_idx = content_lines.len().saturating_sub(max_text_rows);
-                content_lines = content_lines.into_iter().skip(start_idx).collect();
-            }
-        }
 
         let calc_titles_w = |aligns: (Align, Align, Align)| -> usize {
             self.titles
@@ -853,9 +799,8 @@ impl<W: Widget> Block<W> {
         lines
     }
 
-    // --- Dynamic Terminal Controls ---
+    // --- Dynamic Terminal Control ---
 
-    /// Prepares the target terminal viewport buffer space when vertical size expands.
     pub(crate) fn prepare_viewport<Writer: Write>(
         writer: &mut Writer,
         prev_height: usize,
@@ -893,7 +838,6 @@ impl<W: Widget> Block<W> {
         Ok(())
     }
 
-    /// Erases all previously drawn lines of the block from terminal output.
     pub(crate) fn clear_previous_frame<Writer: Write>(
         writer: &mut Writer,
         prev_height: usize,
@@ -917,7 +861,6 @@ impl<W: Widget> Block<W> {
         writer.flush()
     }
 
-    /// Draws updated frame lines dynamically over existing terminal output.
     pub(crate) fn print_lines_dynamic<Writer: Write>(
         writer: &mut Writer,
         lines: &[String],
@@ -947,7 +890,6 @@ impl<W: Widget> Block<W> {
         writer.flush()
     }
 
-    /// Prints final frame lines upon completion, persisting them to the terminal output scrollback buffer.
     pub(crate) fn print_lines_final<Writer: Write>(
         writer: &mut Writer,
         lines: &[String],
@@ -973,32 +915,96 @@ impl<W: Widget> Block<W> {
         writer.flush()
     }
 
-    // --- Main Rendering Engine ---
+    // --- Main Rendering Cycle ---
 
-    /// Runs the main interactive rendering loop.
-    ///
-    /// Manages user input polling, dynamic terminal re-rendering, blink animations on finish,
-    /// and extracts the final output produced by the inner widget.
-    pub async fn render(mut self) -> io::Result<W::Output> {
+    /// Renders block to the specified Writer (compatible method for `push_sub_widget').
+    pub async fn render_to(
+        self,
+        stdout: &mut io::BufWriter<io::Stdout>,
+        _prev_height: usize,
+    ) -> io::Result<(W::Output, Vec<String>)> {
+        self.render_with_writer(stdout).await
+    }
+
+    /// Entry point for launching widget rendering.
+    pub async fn render(self) -> io::Result<W::Output> {
+        let mut stdout = BufWriter::with_capacity(1024, io::stdout());
+        let (output, _) = self.render_with_writer(&mut stdout).await?;
+        Ok(output)
+    }
+
+    pub async fn render_with_writer(
+        mut self,
+        mut stdout: &mut io::BufWriter<io::Stdout>,
+    ) -> io::Result<(W::Output, Vec<String>)> {
         let _terminal_guard = TerminalGuard::new(true);
 
-        let mut stdout = BufWriter::with_capacity(1024, io::stdout());
         let mut prev_height = 0;
         let mut first_render = true;
 
         let mut fps_ticker = interval(Duration::from_millis(16));
+        let mut needs_redraw = false;
 
         loop {
             fps_ticker.tick().await;
 
-            // 1. poll user keyboard input events
+            // control commands
+            while let Ok(cmd) = self.cmd_rx.try_recv() {
+                match cmd {
+                    Command::Invalidate => needs_redraw = true,
+                    Command::Freeze => self.is_frozen = true,
+                    Command::Resume => self.is_frozen = false,
+                    Command::Finish => self.is_finished_signal = true,
+                    Command::PushSubWidget {
+                        runner,
+                        position,
+                        keep_rendered,
+                        reply,
+                    } => {
+                        match position {
+                            SubWidgetPosition::Below => {
+                                if let Some(ref lines) = self.last_rendered_frame {
+                                    let _ = Self::clear_previous_frame(stdout, prev_height);
+                                    let _ = Self::print_lines_final(stdout, lines);
+                                    prev_height = 0;
+                                }
+                            }
+                            SubWidgetPosition::Above | SubWidgetPosition::Replace => {
+                                // clearing parent's frame to free up space
+                                let _ = Self::clear_previous_frame(stdout, prev_height);
+                                prev_height = 0;
+                            }
+                        }
+
+                        // executing a subwidget
+                        let (res, sub_lines) = runner(stdout, prev_height).await?;
+                        let _ = reply.send(res);
+
+                        // erase the subwidget
+                        if !keep_rendered || position == SubWidgetPosition::Replace {
+                            let _ = Self::clear_previous_frame(stdout, sub_lines.len());
+                        }
+
+                        first_render = true;
+                    }
+                }
+            }
+
+            // handling user events for a widget
+            while let Ok(ev) = self.event_rx.try_recv() {
+                self.inner.handle_event(ev);
+            }
+
+            // keyboard and terminal events
             while event::poll(Duration::from_secs(0))? {
                 match event::read()? {
                     Event::Key(key) => {
-                        self.inner.handle_key(key);
+                        if !self.is_frozen {
+                            self.inner.handle_key(key);
 
-                        if let Some(ref mut handler) = self.on_key {
-                            handler(&mut self.inner, key);
+                            if let Some(ref mut handler) = self.on_key {
+                                handler(&mut self.inner, key);
+                            }
                         }
 
                         if key.code == KeyCode::Char('c')
@@ -1022,10 +1028,7 @@ impl<W: Widget> Block<W> {
                         self.last_rendered_frame = None;
                         self.inner.on_resize(cols, rows);
 
-                        // erase old frame before rendering new layout
                         let _ = Self::clear_previous_frame(&mut stdout, prev_height);
-
-                        // clear full screen and reset cursor position to redraw cleanly
                         let _ = queue!(
                             stdout,
                             terminal::Clear(terminal::ClearType::All),
@@ -1040,18 +1043,30 @@ impl<W: Widget> Block<W> {
                 }
             }
 
-            // 2. check if widget completed execution
-            if self.inner.is_finished() {
+            let (term_cols, term_rows) = terminal::size().unwrap_or((80, 24));
+
+            // check shutdown signal
+            if self.is_finished_signal || (!self.has_handler && self.inner.is_finished()) {
+                if !self.is_frozen && (self.inner.is_changed() || needs_redraw) {
+                    let _lines = self.render_frame_with_viewport(
+                        term_cols as usize,
+                        Some(term_rows as usize),
+                        true,
+                    );
+                }
+
                 break;
             }
 
-            // 3. render frame if internal state changed or initial frame render
-            if self.inner.is_changed() || first_render {
+            // redrawing frame
+            if !self.is_frozen && (self.inner.is_changed() || needs_redraw || first_render) {
                 first_render = false;
 
-                let (term_cols, term_rows) = terminal::size().unwrap_or((80, 24));
-                let lines =
-                    self.render_frame_with_viewport(term_cols as usize, Some(term_rows as usize));
+                let lines = self.render_frame_with_viewport(
+                    term_cols as usize,
+                    Some(term_rows as usize),
+                    false,
+                );
 
                 self.last_rendered_frame = Some(lines.clone());
 
@@ -1060,8 +1075,8 @@ impl<W: Widget> Block<W> {
                 Self::print_lines_dynamic(&mut stdout, &lines)?;
                 prev_height = lines.len();
 
-                // update terminal cursor position
-                if self.inner.show_cursor() {
+                // positioning cursor
+                if self.show_cursor {
                     if let Some((col, row)) = self.calculate_cursor_offset() {
                         queue!(stdout, cursor::MoveToColumn(col))?;
 
@@ -1077,8 +1092,7 @@ impl<W: Widget> Block<W> {
                 }
                 stdout.flush()?;
 
-                // return cursor back to top row of current block
-                if self.inner.show_cursor() {
+                if self.show_cursor {
                     if let Some((_, row)) = self.calculate_cursor_offset() {
                         if row > 0 {
                             queue!(stdout, cursor::MoveUp(row))?;
@@ -1088,11 +1102,11 @@ impl<W: Widget> Block<W> {
             }
         }
 
-        // 4. perform final render and blink animation sequence
-        if !self.remove_on_finish {
+        // final render
+        let final_lines = if !self.remove_on_finish {
             let (term_cols, term_rows) = terminal::size().unwrap_or((80, 24));
 
-            // 4.1. run blink animation phase
+            // run blink animation
             if let Some(blink_col) = self.blink_color {
                 let original_bg = self.bg_color.unwrap_or(Color::Rgb { r: 0, g: 0, b: 0 });
                 let mid_color = ansi::lerp_color(original_bg, blink_col, 0.5);
@@ -1106,8 +1120,11 @@ impl<W: Widget> Block<W> {
                     this.bg_color = Some(color);
                     this.invalidate_border_cache();
 
-                    let lines = this
-                        .render_frame_with_viewport(term_cols as usize, Some(term_rows as usize));
+                    let lines = this.render_frame_with_viewport(
+                        term_cols as usize,
+                        Some(term_rows as usize),
+                        false,
+                    );
 
                     let _ = Self::clear_previous_frame(&mut stdout, prev_height);
                     let _ = Self::print_lines_dynamic(&mut stdout, &lines);
@@ -1127,18 +1144,17 @@ impl<W: Widget> Block<W> {
                 self.invalidate_border_cache();
             }
 
-            // 4.2. clear dynamic frame while still in raw terminal mode
-            Self::clear_previous_frame(&mut stdout, prev_height)?;
-
-            // 4.3. lift height bounds for final frame print
+            Self::clear_previous_frame(stdout, prev_height)?;
             self.max_height = None;
 
-            let final_lines = self.render_frame_with_viewport(term_cols as usize, None);
-            Self::print_lines_final(&mut stdout, &final_lines)?;
+            let lines = self.render_frame_with_viewport(term_cols as usize, None, true);
+            Self::print_lines_final(stdout, &lines)?;
+            lines
         } else {
-            Self::clear_previous_frame(&mut stdout, prev_height)?;
-        }
+            Self::clear_previous_frame(stdout, prev_height)?;
+            Vec::new()
+        };
 
-        Ok(self.inner.extract_output())
+        Ok((self.inner.extract_output(), final_lines))
     }
 }

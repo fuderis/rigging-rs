@@ -3,7 +3,7 @@ name = "rigging"
 description = "An asynchronous TUI framework for Rust designed to create reactive inline terminal interfaces."
 keywords = ["tui", "ui", "terminal", "interface", "framework"]
 categories = ["development-tools"]
-version = "0.4.0"
+version = "0.5.0"
 license = "MIT"
 authors = ["Bulat Sh. <synapdrake@ya.ru>"]
 repository = "https://github.com/fuderis/rigging-rs"
@@ -11,6 +11,7 @@ readme = "README.md"
 edition = "2024"
 
 [dependencies]
+atoman = { version = "0.10.1" }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 tokio = { version = "1.53.1", features = ["full"] }
 async-trait = "0.1.91"
@@ -31,15 +32,15 @@ tree-sitter-json = { version = "0.23", optional = true }
 tree-sitter-yaml = { version = "0.7", optional = true }
 adot-tree-sitter-toml = { version = "0.1.0", optional = true }
 
-atoman = { version = "0.4.4", optional = true }
 macron = { version = "0.5.0", features = ["derive"] }
 heck = "0.5.0"
 strsim = "0.11.1"
+serde = { version = "1.0.229", features = ["derive"] }
 
 [features]
 full = ["markdown", "highlight", "buffer"]
 markdown = ["dep:markdown"]
-buffer = ["dep:atoman"]
+buffer = []
 highlight = [
   "dep:tree-sitter", "dep:tree-sitter-highlight", "dep:tree-sitter-rust", "dep:tree-sitter-bash",
   "dep:tree-sitter-python", "dep:tree-sitter-javascript", "dep:tree-sitter-typescript", "dep:tree-sitter-go",

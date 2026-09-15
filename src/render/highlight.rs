@@ -1,5 +1,4 @@
-use super::ansi::{get_active_text_color, visible_width};
-use crate::theme::CodeTheme;
+use crate::{theme::CodeTheme, utils::ansi};
 
 use crossterm::style::{Color, Stylize};
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
@@ -160,7 +159,7 @@ impl SyntaxHighlighter {
         Self::wrap_highlighted_code(&clean, width)
     }
 
-    /// Performs exact character-by-character line wrapping while detecting and restoring ANSI text colors using `get_active_text_color`.
+    /// Performs exact character-by-character line wrapping while detecting and restoring ANSI text colors using `ansi::get_active_text_color`.
     fn wrap_highlighted_code(content: &str, max_width: usize) -> String {
         if max_width == 0 {
             return content.to_string();
@@ -169,7 +168,7 @@ impl SyntaxHighlighter {
         let mut final_lines = Vec::new();
 
         for line in content.split('\n') {
-            if visible_width(line) <= max_width {
+            if ansi::visible_width(line) <= max_width {
                 final_lines.push(line.to_string());
                 continue;
             }
@@ -195,12 +194,12 @@ impl SyntaxHighlighter {
                 }
 
                 let ch_str = ch.to_string();
-                let ch_w = visible_width(&ch_str);
+                let ch_w = ansi::visible_width(&ch_str);
 
                 // wrap line if adding character exceeds maximum width
                 if current_w + ch_w > max_width {
                     // retrieve active text color for current chunk using helper function
-                    let active_color = get_active_text_color(&current_chunk);
+                    let active_color = ansi::get_active_text_color(&current_chunk);
 
                     // reset current styles before line break
                     current_chunk.push_str("\x1b[0m");

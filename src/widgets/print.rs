@@ -1,7 +1,11 @@
-use crate::render::{ansi, block::Block, widget::Widget};
-use crossterm::style::{Color, Stylize};
+use crate::{
+    render::{block::Block, widget::Widget},
+    utils::ansi,
+};
 
-/// Level of status message.
+use crossterm::style::{Color, Stylize};
+use std::sync::Arc;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     Info,
@@ -10,7 +14,6 @@ pub enum MessageKind {
     Error,
 }
 
-/// Levels for text headers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HeaderLevel {
     #[default]
@@ -19,7 +22,6 @@ pub enum HeaderLevel {
     H3,
 }
 
-/// Renderable terminal UI elements.
 pub enum PrintBlock {
     Header {
         level: HeaderLevel,
@@ -49,80 +51,61 @@ pub enum PrintBlock {
     },
 }
 
-/// Widget for rendering formatted text blocks.
-/// (headers, status messages, key-value fields with dynamic alignment, trees, and horizontal rules.)
 pub struct Print {
     pub(crate) blocks: Vec<PrintBlock>,
 }
 
 impl Print {
-    // --- Constructor Factory Methods ---
-
-    /// Creates new `Print` builder and pushes an H1 header.
     pub fn h1(text: impl Into<String>) -> Block<Self> {
         Self::new().h1(text)
     }
 
-    /// Creates new `Print` builder and pushes an H2 header.
     pub fn h2(text: impl Into<String>) -> Block<Self> {
         Self::new().h2(text)
     }
 
-    /// Creates new `Print` builder and pushes an H3 header.
     pub fn h3(text: impl Into<String>) -> Block<Self> {
         Self::new().h3(text)
     }
 
-    /// Creates new `Print` builder and pushes an Info message block.
     pub fn info(text: impl Into<String>) -> Block<Self> {
         Self::new().info(text)
     }
 
-    /// Creates new `Print` builder and pushes a Warning message block.
     pub fn warn(text: impl Into<String>) -> Block<Self> {
         Self::new().warn(text)
     }
 
-    /// Creates new `Print` builder and pushes a Success message block.
     pub fn success(text: impl Into<String>) -> Block<Self> {
         Self::new().success(text)
     }
 
-    /// Creates new `Print` builder and pushes an Error message block.
     pub fn error(text: impl Into<String>) -> Block<Self> {
         Self::new().error(text)
     }
 
-    /// Creates new `Print` builder and pushes a bullet point block.
     pub fn item(text: impl Into<String>) -> Block<Self> {
         Self::new().item(text)
     }
 
-    /// Creates new `Print` builder and pushes a tree hierarchy item block.
     pub fn tree_item(text: impl Into<String>) -> Block<Self> {
         Self::new().tree_item(text)
     }
 
-    /// Creates new `Print` builder and pushes a key-value field block.
     pub fn field(label: impl Into<String>, value: impl Into<String>) -> Block<Self> {
         Self::new().field(label, value)
     }
 
-    /// Creates new `Print` builder and pushes a horizontal divider rule.
     pub fn line() -> Block<Self> {
         Self::new().line()
     }
 
-    /// Initializes `Print` widget wrapped in a `Block`.
     pub fn new() -> Block<Self> {
-        Block::new(Self { blocks: Vec::new() })
+        Block::new(Self { blocks: Vec::new() }, ())
     }
 }
 
 impl Block<Print> {
-    // --- Fluent Builder Interface ---
-
-    /// Sets color attribute for the most recently added block element.
     pub fn color(mut self, color: Color) -> Self {
         if let Some(last) = self.inner.blocks.last_mut() {
             match last {
@@ -137,7 +120,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends Level 1 Header (`H1`).
     pub fn h1(mut self, text: impl Into<String>) -> Self {
         self.inner.blocks.push(PrintBlock::Header {
             level: HeaderLevel::H1,
@@ -147,7 +129,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends Level 2 Header (`H2`).
     pub fn h2(mut self, text: impl Into<String>) -> Self {
         self.inner.blocks.push(PrintBlock::Header {
             level: HeaderLevel::H2,
@@ -157,7 +138,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends Level 3 Header (`H3`).
     pub fn h3(mut self, text: impl Into<String>) -> Self {
         self.inner.blocks.push(PrintBlock::Header {
             level: HeaderLevel::H3,
@@ -167,7 +147,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends Informational message block (`•`).
     pub fn info(mut self, text: impl Into<String>) -> Self {
         self.inner.blocks.push(PrintBlock::Message {
             kind: MessageKind::Info,
@@ -177,7 +156,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends Warning message block (`ℹ`).
     pub fn warn(mut self, text: impl Into<String>) -> Self {
         self.inner.blocks.push(PrintBlock::Message {
             kind: MessageKind::Warn,
@@ -187,7 +165,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends Success message block (`✓`).
     pub fn success(mut self, text: impl Into<String>) -> Self {
         self.inner.blocks.push(PrintBlock::Message {
             kind: MessageKind::Success,
@@ -197,7 +174,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends Error message block (`✗`).
     pub fn error(mut self, text: impl Into<String>) -> Self {
         self.inner.blocks.push(PrintBlock::Message {
             kind: MessageKind::Error,
@@ -207,7 +183,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends bullet list item (`•`).
     pub fn item(mut self, text: impl Into<String>) -> Self {
         self.inner.blocks.push(PrintBlock::Bullet {
             text: text.into(),
@@ -216,7 +191,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends tree node element (`└─`).
     pub fn tree_item(mut self, text: impl Into<String>) -> Self {
         self.inner.blocks.push(PrintBlock::Tree {
             text: text.into(),
@@ -225,7 +199,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends key-value field block (`Label: Value`).
     pub fn field(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
         self.inner.blocks.push(PrintBlock::Field {
             label: label.into(),
@@ -235,7 +208,6 @@ impl Block<Print> {
         self
     }
 
-    /// Appends horizontal line spanning the maximum available width.
     pub fn line(mut self) -> Self {
         self.inner.blocks.push(PrintBlock::Line { color: None });
         self
@@ -243,27 +215,33 @@ impl Block<Print> {
 }
 
 impl Widget for Print {
+    type State = ();
     type Output = ();
+    type Event = ();
 
     fn is_changed(&self) -> bool {
         false
     }
 
-    fn render_content(
+    fn is_finished(&self) -> bool {
+        true
+    }
+
+    fn render_frame(
         &mut self,
+        _state: &Arc<Self::State>,
         max_width: Option<usize>,
         _max_height: Option<usize>,
+        _is_final: bool,
     ) -> Vec<String> {
         let mut lines = Vec::new();
         let mut idx = 0;
 
         while idx < self.blocks.len() {
-            // dynamic width layout optimization for sequential `Field` elements
             if matches!(self.blocks[idx], PrintBlock::Field { .. }) {
                 let start_idx = idx;
                 let mut max_label_len = 0;
 
-                // pre-calculate maximum visual label width within the contiguous block
                 while idx < self.blocks.len() {
                     if let PrintBlock::Field { label, .. } = &self.blocks[idx] {
                         let label_len = ansi::visible_width(label);
@@ -276,7 +254,6 @@ impl Widget for Print {
                     }
                 }
 
-                // render all aligned fields in the collected group
                 for i in start_idx..idx {
                     if let PrintBlock::Field {
                         label,
@@ -287,7 +264,7 @@ impl Widget for Print {
                         let label_w = ansi::visible_width(label);
                         let padding = " ".repeat(max_label_len.saturating_sub(label_w));
 
-                        let raw_prefix = format!("  {}{} : ", label, padding); // Indented by 2 spaces
+                        let raw_prefix = format!("  {}{} : ", label, padding);
                         let mut styled_prefix = raw_prefix.as_str().bold();
                         if let Some(c) = color {
                             styled_prefix = styled_prefix.with(*c);
@@ -315,7 +292,6 @@ impl Widget for Print {
                 continue;
             }
 
-            // Processing non-field block types
             match &self.blocks[idx] {
                 PrintBlock::Header { level, text, color } => {
                     let mut styled = match level {
@@ -384,7 +360,7 @@ impl Widget for Print {
                 }
 
                 PrintBlock::Bullet { text, color } => {
-                    let mut symbol = "  • ".bold(); // Indented by 2 spaces
+                    let mut symbol = "  • ".bold();
                     if let Some(c) = color {
                         symbol = symbol.with(*c);
                     }
@@ -408,7 +384,7 @@ impl Widget for Print {
                 }
 
                 PrintBlock::Tree { text, color } => {
-                    let mut symbol = "  └─ ".bold(); // Indented by 2 spaces
+                    let mut symbol = "  └─ ".bold();
                     if let Some(c) = color {
                         symbol = symbol.with(*c);
                     }
@@ -432,7 +408,6 @@ impl Widget for Print {
                 }
 
                 PrintBlock::Line { color } => {
-                    // fall back to sensible default width if no explicit limit is provided
                     let width = max_width.unwrap_or(80);
                     let raw_line = "─".repeat(width);
 
@@ -454,5 +429,5 @@ impl Widget for Print {
         lines
     }
 
-    fn extract_output(self) -> Self::Output {}
+    fn extract_output(&mut self) -> Self::Output {}
 }

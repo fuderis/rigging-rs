@@ -1,4 +1,7 @@
-/// The cargo package metadata
+use serde::{Deserialize, Serialize};
+
+/// Cargo package metadata
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PkgMeta {
     pub name: &'static str,
     pub description: &'static str,

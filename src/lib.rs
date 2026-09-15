@@ -2,10 +2,14 @@
 mod error;
 mod prelude;
 
+pub mod utils;
+
 pub mod parser;
-pub use parser::Commands;
+pub use parser::{Commands, Context as CommandContext, PkgMeta};
 
 pub mod render;
+pub use render::Context as WidgetContext;
+
 pub mod widgets;
 
 pub mod style;
