@@ -807,32 +807,30 @@ impl<W: Widget> Block<W> {
         target_height: usize,
     ) -> io::Result<()> {
         if target_height > prev_height {
-            if prev_height == 0 {
-                if target_height > 1 {
-                    let lines_to_add = target_height - 1;
-                    for _ in 0..lines_to_add {
-                        queue!(writer, crossterm::style::Print("\r\n"))?;
-                    }
-                    queue!(
-                        writer,
-                        cursor::MoveUp(lines_to_add as u16),
-                        cursor::MoveToColumn(0)
-                    )?;
-                }
-            } else {
-                let needed = target_height - prev_height;
-                if prev_height > 1 {
-                    queue!(writer, cursor::MoveDown((prev_height - 1) as u16))?;
-                }
-                for _ in 0..needed {
-                    queue!(writer, crossterm::style::Print("\r\n"))?;
-                }
-                queue!(
-                    writer,
-                    cursor::MoveUp((target_height - 1) as u16),
-                    cursor::MoveToColumn(0)
-                )?;
+            let needed = target_height - prev_height;
+
+            // go down to the very bottom of the already drawn frame (if there was one)
+            if prev_height > 0 {
+                queue!(writer, cursor::MoveDown(prev_height as u16 - 1))?;
             }
+
+            // punch required number of new lines down through \r\n
+            for _ in 0..needed {
+                queue!(writer, crossterm::style::Print("\r\n"))?;
+            }
+
+            // return exactly to the top point (the beginning of our block)
+            let total_down = if prev_height > 0 {
+                (prev_height - 1) + needed
+            } else {
+                needed
+            };
+
+            if total_down > 0 {
+                queue!(writer, cursor::MoveUp(total_down as u16))?;
+            }
+
+            queue!(writer, cursor::MoveToColumn(0))?;
             writer.flush()?;
         }
         Ok(())
@@ -1126,6 +1124,7 @@ impl<W: Widget> Block<W> {
                         false,
                     );
 
+                    let _ = Self::prepare_viewport(&mut stdout, prev_height, lines.len());
                     let _ = Self::clear_previous_frame(&mut stdout, prev_height);
                     let _ = Self::print_lines_dynamic(&mut stdout, &lines);
                     prev_height = lines.len();
@@ -1144,10 +1143,17 @@ impl<W: Widget> Block<W> {
                 self.invalidate_border_cache();
             }
 
-            Self::clear_previous_frame(stdout, prev_height)?;
+            // removing height restriction for the final frame
             self.max_height = None;
 
+            // rendering full text without truncation
             let lines = self.render_frame_with_viewport(term_cols as usize, None, true);
+
+            // preparing viewport from the CURRENT prev_height to the full lines.len()
+            Self::prepare_viewport(stdout, prev_height, lines.len())?;
+
+            // clean up old frame and print the final one.
+            Self::clear_previous_frame(stdout, prev_height)?;
             Self::print_lines_final(stdout, &lines)?;
             lines
         } else {

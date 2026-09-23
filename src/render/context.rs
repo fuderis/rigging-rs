@@ -61,7 +61,6 @@ impl<T: Clone + Send + Sync + 'static, E: Send + 'static> Context<T, E> {
     }
 
     pub fn notify(&mut self) {
-        self.state.sync();
         self.send_command(Command::Invalidate);
     }
 
