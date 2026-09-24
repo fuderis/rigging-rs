@@ -61,36 +61,62 @@ The framework is built around two fundamental concepts:
 ### The `Widget` Trait
 
 ```rust
-use crossterm::event::KeyEvent;
+use rigging::crossterm::event::KeyEvent;
 
-pub trait Widget: Send + Sync {
+pub trait Widget {
+    /// External state type owned by the application (read-only snapshot source).
+    type State: Default + Clone + Sync + Send + 'static;
+
+    /// The result type emitted when the widget completes its lifecycle.
     type Output;
 
-    /// Signal indicating a new frame needs to be rendered
-    fn is_changed(&self) -> bool;
+    /// Internal event type dispatched via `Context::send_event`.
+    type Event: Send + 'static;
 
-    /// Generates content lines fitted to the available `width`
-    fn render_content(&mut self, width: usize) -> Vec<String>;
+    /// Indicates whether *internal widget-local state* changed and requires a redraw.
+    ///
+    /// User `State` updates are tracked externally by the renderer, so widgets without
+    /// internal visual logic (e.g., animations) should return `false`.
+    fn is_changed(&self) -> bool {
+        false
+    }
 
-    /// Handles keyboard input
+    /// Indicates whether the internal processing of the widget is complete.
+    ///
+    /// Custom handlers run synchronously before frame evaluation, so widgets without
+    /// complex background logic can safely return `true`.
+    fn is_finished(&self) -> bool {
+        true
+    }
+
+    /// Renders a frame using the latest immutable snapshot of `State`.
+    ///
+    /// # Arguments
+    /// * `state` - Read-only snapshot of the shared state.
+    /// * `max_width` - Optional horizontal bounding constraint.
+    /// * `max_height` - Optional vertical bounding constraint.
+    /// * `is_final` - `true` if this is the final render pass before termination.
+    fn render_frame(&mut self, state: &Arc<Self::State>, max_width: Option<usize>, max_height: Option<usize>, is_final: bool) -> Vec<String>;
+
+    /// Handles raw keyboard input events from the terminal.
     fn handle_key(&mut self, _key: KeyEvent) {}
 
-    /// Handles terminal resize events
+    /// Handles custom domain events emitted from background tasks or `Context`.
+    fn handle_event(&mut self, _event: Self::Event) {}
+
+    /// Responds to terminal or container resize notifications.
     fn on_resize(&mut self, _cols: u16, _rows: u16) {}
 
-    /// Completion flag; when `true`, the render loop stops
-    fn is_finished(&self) -> bool { true }
-
-    /// Extracts the final execution result
-    fn extract_output(self) -> Self::Output;
-
-    /// Relative cursor position `(col, row)`
-    fn cursor_position(&self) -> Option<(usize, usize)> { None }
-
-    /// Indicates whether the widget needs a visible cursor.
-    fn show_cursor(&self) -> bool {
-        self.cursor_position().is_some()
+    /// Returns relative cursor coordinates `(column, row)` within the widget, if active.
+    fn cursor_position(&self) -> Option<(usize, usize)> {
+        None
     }
+
+    /// Extracts the execution result without consuming `self`.
+    ///
+    /// Allows the widget instance to persist in memory (e.g., inside terminal history)
+    /// while yielding its output to the engine.
+    fn extract_output(&mut self) -> Self::Output;
 }
 ```
 
