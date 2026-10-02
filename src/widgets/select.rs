@@ -2,14 +2,16 @@ use crate::render::{block::Block, widget::Widget};
 
 use crossterm::{
     event::{KeyCode, KeyEvent, KeyModifiers},
-    style::Stylize,
+    style::{Color, Stylize},
 };
 use std::sync::Arc;
 
+/// Interactive selection menu.
 pub struct SelectMenu {
     prompt: String,
     items: Vec<String>,
     selected_idx: usize,
+    selected_color: Color,
     output: Option<usize>,
     is_finished: bool,
     dirty: bool,
@@ -23,12 +25,18 @@ impl SelectMenu {
                 prompt: prompt.into(),
                 items,
                 selected_idx: 0,
+                selected_color: Color::Cyan,
                 output: None,
                 is_finished: false,
                 dirty: true,
             },
             (),
         )
+    }
+
+    pub fn select_color(mut self, color: Color) -> Self {
+        self.selected_color = color;
+        self
     }
 }
 
@@ -66,7 +74,7 @@ impl Widget for SelectMenu {
 
             if idx == self.selected_idx {
                 let line = format!("  > {}{}", num_prefix, item)
-                    .cyan()
+                    .with(self.selected_color)
                     .bold()
                     .to_string();
                 lines.push(line);
