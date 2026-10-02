@@ -238,19 +238,40 @@ impl Commands {
             ));
         }
 
-        // 3. Execute matched terminal handler or generate suggestions / help
+        // 3. Execute matched terminal handler
         if let Some(ref handler) = current.handler {
             let (ctx, help_flag) = parse_and_validate_node(current, &self.global_flags, remaining)?;
 
             if help_flag {
-                Ok(DispatchOutput::Help(
+                return Ok(DispatchOutput::Help(
                     self.generate_node_help(current, &full_path),
-                ))
-            } else {
-                let res = handler(ctx).await;
-                Ok(DispatchOutput::Executed(res))
+                ));
             }
-        } else if failed_token.is_some() || !current.subcommands.is_empty() {
+
+            let res = handler(ctx).await;
+
+            // check ctx.skip() flag
+            if let Err(ref err) = res {
+                if matches_downcast!(err, ParseError::Skip) {
+                    return self.fallback_or_error(current, &full_path, failed_token, args);
+                }
+            }
+
+            Ok(DispatchOutput::Executed(res))
+        } else {
+            self.fallback_or_error(current, &full_path, failed_token, args)
+        }
+    }
+
+    /// Helper method for generate typos/hints in case of missing or missing matches.
+    fn fallback_or_error(
+        &self,
+        current: &CommandNode,
+        full_path: &str,
+        failed_token: Option<&str>,
+        args: &[String],
+    ) -> StdResult<DispatchOutput, ParseError> {
+        if failed_token.is_some() || !current.subcommands.is_empty() {
             if let Some(typo) = failed_token {
                 let best_match = self.find_similar_command(current, typo);
 
@@ -276,7 +297,7 @@ impl Commands {
                 ))
             } else {
                 Ok(DispatchOutput::Help(
-                    self.generate_node_help(current, &full_path),
+                    self.generate_node_help(current, full_path),
                 ))
             }
         } else {

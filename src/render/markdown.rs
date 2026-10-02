@@ -51,49 +51,49 @@ impl Default for Markdown {
 }
 
 impl Markdown {
-    /// creates a new [`Markdown`] renderer with default configuration.
+    /// Creates a new [`Markdown`] renderer with default configuration.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// sets the stripe style for blockquotes and code blocks.
+    /// Sets stripe style for blockquotes and code blocks.
     pub fn stripe_style(mut self, style: StripeStyle) -> Self {
         self.stripe_style = style;
         self
     }
 
-    /// sets the stripe color for blockquotes and code blocks.
+    /// Sets stripe color for blockquotes and code blocks.
     pub fn stripe_color(mut self, color: Color) -> Self {
         self.stripe_color = Some(color);
         self
     }
 
-    /// sets the bullet style for list items (e.g., Dot, Arrow, Star, Custom).
+    /// Sets bullet style for list items (e.g., Dot, Arrow, Star, Custom).
     pub fn bullet_style(mut self, style: BulletStyle) -> Self {
         self.bullet_style = style;
         self
     }
 
-    /// sets the bullet color for list items.
+    /// Sets bullet color for list items.
     pub fn bullet_color(mut self, color: Color) -> Self {
         self.bullet_color = Some(color);
         self
     }
 
-    /// sets the color for inline code spans.
+    /// Sets color for inline code spans.
     pub fn code_color(mut self, color: Color) -> Self {
         self.code_color = Some(color);
         self
     }
 
-    /// sets the theme for code syntax highlighting.
+    /// Sets theme for code syntax highlighting.
     #[cfg(feature = "highlight")]
     pub fn theme(mut self, theme: CodeTheme) -> Self {
         self.theme = theme;
         self
     }
 
-    /// renders raw Markdown content into an ANSI-styled terminal string.
+    /// Renders raw Markdown content into an ANSI-styled terminal string.
     pub fn render(&self, content: impl AsRef<str>, max_width: usize) -> String {
         let options = ParseOptions::gfm();
 
@@ -105,13 +105,23 @@ impl Markdown {
         self.render_node(&ast, max_width, "")
     }
 
+    fn render_children_nodes(
+        &self,
+        children: &[Node],
+        max_width: usize,
+        indent: &str,
+    ) -> Vec<String> {
+        let mut rendered = Vec::with_capacity(children.len());
+        for child in children {
+            rendered.push(self.render_node(child, max_width, indent));
+        }
+        rendered
+    }
+
     fn render_node(&self, node: &Node, max_width: usize, indent: &str) -> String {
         match node {
-            Node::Root(root) => root
-                .children
-                .iter()
-                .map(|child| self.render_node(child, max_width, indent))
-                .collect::<Vec<_>>()
+            Node::Root(root) => self
+                .render_children_nodes(&root.children, max_width, indent)
                 .join("\n"),
 
             Node::Paragraph(p) => {
@@ -220,11 +230,9 @@ impl Markdown {
                     None => bar_char,
                 };
 
-                let inner = b
-                    .children
-                    .iter()
-                    .map(|child| self.render_node(child, inner_width, ""))
-                    .collect::<String>();
+                let inner = self
+                    .render_children_nodes(&b.children, inner_width, "")
+                    .concat();
 
                 inner
                     .lines()
@@ -236,6 +244,9 @@ impl Markdown {
 
             // --- Lists ---
             Node::List(l) => {
+                let indent_str = format!("{indent}  ");
+                let inner_width = max_width.saturating_sub(2);
+
                 l.children
                     .iter()
                     .enumerate()
@@ -246,21 +257,15 @@ impl Markdown {
                             self.bullet_style.render_symbol(idx)
                         };
 
-                        let raw_prefix = format!("{} ", symbol);
+                        let raw_prefix = format!("{symbol} ");
                         let prefix_w = ansi::visible_width(&raw_prefix);
-                        let inner_width = max_width.saturating_sub(prefix_w);
 
-                        // Чистые обычные пробелы для отступа дочерних элементов:
-                        let child_indent = format!("{}{}", indent, " ".repeat(prefix_w));
+                        let child_indent = format!("{indent_str}{}", " ".repeat(prefix_w));
 
                         let item_str = match child {
-                            Node::ListItem(li) => li
-                                .children
-                                .iter()
-                                .map(|sub_child| {
-                                    self.render_node(sub_child, inner_width, &child_indent)
-                                })
-                                .collect::<String>(),
+                            Node::ListItem(li) => self
+                                .render_children_nodes(&li.children, inner_width, &child_indent)
+                                .concat(),
                             _ => self.render_node(child, inner_width, &child_indent),
                         };
 
@@ -273,7 +278,7 @@ impl Markdown {
                         let first_line = lines.next().unwrap_or("").trim_start();
 
                         let mut result =
-                            format!("{}{}{} {}\n", indent, styled_symbol, "", first_line);
+                            format!("{}{}{} {}\n", indent_str, styled_symbol, "", first_line);
                         for line in lines {
                             result.push_str(&format!("{}\n", line));
                         }
@@ -283,11 +288,9 @@ impl Markdown {
                     .join("")
             }
 
-            Node::ListItem(li) => li
-                .children
-                .iter()
-                .map(|child| self.render_node(child, max_width, indent))
-                .collect::<String>(),
+            Node::ListItem(li) => self
+                .render_children_nodes(&li.children, max_width, indent)
+                .concat(),
 
             Node::Table(t) => self.render_table(t, max_width),
 
@@ -557,7 +560,7 @@ fn wrap_plain_code(code: &str, available_width: usize) -> String {
     result_lines.join("\n")
 }
 
-/// renders Markdown text using default configurations for quick one-off rendering.
+/// Renders Markdown text using default configurations for quick one-off rendering.
 pub fn markdown(content: impl AsRef<str>, max_width: usize) -> String {
     Markdown::default().render(content, max_width)
 }

@@ -67,15 +67,27 @@ dependencies = [
 
 [[package]]
 name = "atoman"
-version = "0.10.2"
+version = "0.11.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9997d3b7f7afad75acd734a807b09cb8d4b3218ba3049481f84893049c7226db"
+checksum = "9e93c3dbd203d23c34c3ed4a205f7c8b0e17ecdaa9303083f1cb01d91e6bfc9f"
 dependencies = [
  "ahash",
  "arc-swap",
+ "atoman-macros",
  "macron",
  "once_cell",
  "tokio",
+]
+
+[[package]]
+name = "atoman-macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe38f126df6c88085347f6e623ada75871be6adf56a923552394fc07a985a9b4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -317,9 +329,9 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "macron"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c3eb2143ce46d1672dc2dbcd79721552d59b0552b40673920cf837a68445834"
+checksum = "34ef732b61f40f1389705c10933930f022e9209760d5c06338407973ee8eca9c"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -519,7 +531,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rigging"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "adot-tree-sitter-toml",
  "async-trait",

@@ -21,4 +21,7 @@ pub enum ParseError {
 
     #[display(fmt = "Unknown flag '{0}'.")]
     UnknownFlag(String),
+
+    #[display(fmt = "Handler skipped execution")]
+    Skip,
 }

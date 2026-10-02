@@ -9,3 +9,5 @@ pub use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
 };
+
+pub use macron::matches_downcast;

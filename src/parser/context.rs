@@ -11,6 +11,12 @@ pub struct Context {
 }
 
 impl Context {
+    /// Signals to router that the current handler refuses to process the request.
+    /// Parser will intercept this error and continue the standard fallback (search for similar commands / help).
+    pub fn skip<T>(&self) -> Result<T> {
+        Err(ParseError::Skip.into())
+    }
+
     /// Retrieves a required argument and parses it into the target type `T`.
     ///
     /// # Errors
