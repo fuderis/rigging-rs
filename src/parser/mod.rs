@@ -126,32 +126,74 @@ impl Commands {
     }
 
     fn insert_group(&mut self, spec: RouteSpec) {
-        let mut current = &mut self.root;
-        for token in spec.tokens {
-            if let TokenSpec::Literal(name) = token {
-                current = current
-                    .subcommands
-                    .entry(name)
-                    .or_insert_with(|| CommandNode::new(""));
-            }
-        }
-        current.doc = spec.doc;
-    }
-
-    fn insert_route(&mut self, spec: RouteSpec, handler: HandlerFn, hidden: bool) {
-        let mut current = &mut self.root;
+        let mut literal_tokens = Vec::new();
+        let mut positional_tokens = Vec::new();
 
         for token in spec.tokens {
             match token {
-                TokenSpec::Literal(name) => {
-                    current = current
-                        .subcommands
-                        .entry(name)
-                        .or_insert_with(|| CommandNode::new(""));
+                TokenSpec::Literal(ref name) => {
+                    if positional_tokens.is_empty() {
+                        literal_tokens.push(name.clone());
+                    } else {
+                        positional_tokens.push(token);
+                    }
                 }
                 TokenSpec::Positional(_) | TokenSpec::Rest(_) => {
-                    current.positional_tokens.push(token);
+                    positional_tokens.push(token);
                 }
+            }
+        }
+
+        let mut current = &mut self.root;
+
+        for name in &literal_tokens {
+            current = current
+                .subcommands
+                .entry(name.clone())
+                .or_insert_with(|| CommandNode::new(""));
+        }
+
+        current.doc = spec.doc;
+
+        if !positional_tokens.is_empty() {
+            current.positional_tokens = positional_tokens.clone();
+            let pattern_key = format_positional_pattern(&positional_tokens);
+            let pattern_node = current
+                .subcommands
+                .entry(pattern_key)
+                .or_insert_with(|| CommandNode::new(""));
+            pattern_node.doc = spec.doc;
+        }
+    }
+
+    fn insert_route(&mut self, spec: RouteSpec, handler: HandlerFn, hidden: bool) {
+        let mut literal_tokens = Vec::new();
+        let mut positional_tokens = Vec::new();
+
+        for token in spec.tokens {
+            match token {
+                TokenSpec::Literal(ref name) => {
+                    if positional_tokens.is_empty() {
+                        literal_tokens.push(name.clone());
+                    } else {
+                        positional_tokens.push(token);
+                    }
+                }
+                TokenSpec::Positional(_) | TokenSpec::Rest(_) => {
+                    positional_tokens.push(token);
+                }
+            }
+        }
+
+        let mut current = &mut self.root;
+
+        for name in &literal_tokens {
+            current = current
+                .subcommands
+                .entry(name.clone())
+                .or_insert_with(|| CommandNode::new(""));
+            if current.doc.is_empty() {
+                current.doc = spec.doc;
             }
         }
 
@@ -159,6 +201,18 @@ impl Commands {
         current.flags = spec.flags;
         current.handler = Some(handler);
         current.hidden = hidden;
+        current.positional_tokens = positional_tokens.clone();
+
+        if !positional_tokens.is_empty() {
+            let pattern_key = format_positional_pattern(&positional_tokens);
+            let pattern_node = current
+                .subcommands
+                .entry(pattern_key)
+                .or_insert_with(|| CommandNode::new(""));
+            pattern_node.doc = spec.doc;
+            pattern_node.hidden = hidden;
+            pattern_node.positional_tokens = positional_tokens;
+        }
     }
 
     /// Main entrance point for executing CLI commands from process environment arguments.
@@ -198,6 +252,28 @@ impl Commands {
         if args.is_empty() {
             return Ok(DispatchOutput::Help(
                 self.generate_node_help(&self.root, &self.name),
+            ));
+        }
+
+        // 0. Обработка вызова `help <subcommand>` на верхнем уровне
+        if args.first().map(|s| s.as_str()) == Some("help") {
+            let mut current = &self.root;
+            let mut path = vec![self.name.clone()];
+
+            for token in &args[1..] {
+                if token.starts_with('-') {
+                    break;
+                }
+                if let Some(next_node) = current.subcommands.get(token) {
+                    current = next_node;
+                    path.push(token.clone());
+                } else {
+                    break;
+                }
+            }
+
+            return Ok(DispatchOutput::Help(
+                self.generate_node_help(current, &path.join(" ")),
             ));
         }
 
@@ -311,15 +387,12 @@ impl Commands {
         let mut min_distance = usize::MAX;
 
         for (name, child) in &node.subcommands {
-            if child.hidden || !child.has_visible_targets() {
+            if child.hidden || !child.has_visible_targets() || name.starts_with('{') {
                 continue;
             }
 
             let dist = levenshtein(input, name);
 
-            // allow a typo threshold depending on the word length:
-            // (for short words (<= 3 characters) — a maximum of 1 typo,
-            // for long words — up to 3 typos).
             let max_allowed_dist = match input.len() {
                 0..=3 => 1,
                 4..=6 => 2,
@@ -364,31 +437,30 @@ impl Commands {
         if has_visible_subcommands {
             usage.push_str(&" [COMMAND]".dim().to_string());
         }
-        if !node.positional_tokens.is_empty() {
-            for pos in &node.positional_tokens {
-                match pos {
-                    TokenSpec::Positional(p) => usage.push_str(&format!(" {{{}}}", p)),
-                    TokenSpec::Rest(r) => usage.push_str(&format!(" {{{}..}}", r)),
-                    _ => {}
-                }
-            }
-        }
         usage.push_str(&" [OPTIONS]\n\n".dim().to_string());
         out.push_str(&usage);
 
-        if has_visible_subcommands {
+        // commands block
+        let has_standard_subcommands = node
+            .subcommands
+            .iter()
+            .any(|(name, sub)| !name.starts_with('{') && sub.has_visible_targets());
+
+        let show_commands_section = has_standard_subcommands || is_root;
+
+        if show_commands_section {
             out.push_str(&"Commands:\n".bold().underlined().to_string());
 
-            let mut max_width = "help".len();
+            let mut max_width = if is_root { "help".len() } else { 0 };
             for (sub_name, sub_node) in &node.subcommands {
-                if sub_node.has_visible_targets() {
+                if !sub_name.starts_with('{') && sub_node.has_visible_targets() {
                     max_width = max_width.max(sub_name.len());
                 }
             }
             let target_width = max_width + 4;
 
             for (sub_name, sub_node) in &node.subcommands {
-                if !sub_node.has_visible_targets() {
+                if sub_name.starts_with('{') || !sub_node.has_visible_targets() {
                     continue;
                 }
 
@@ -421,6 +493,93 @@ impl Commands {
             out.push('\n');
         }
 
+        // patterns block
+        let has_pattern_subcommands = node
+            .subcommands
+            .iter()
+            .any(|(name, sub)| name.starts_with('{') && sub.has_visible_targets());
+
+        let pos_pat_str = if !node.positional_tokens.is_empty() {
+            format_positional_pattern(&node.positional_tokens)
+        } else {
+            String::new()
+        };
+
+        let show_patterns_section = has_pattern_subcommands || !pos_pat_str.is_empty();
+
+        if show_patterns_section {
+            out.push_str(&"Patterns:\n".bold().underlined().to_string());
+
+            // 1. Считаем максимальную видимую ширину среди всех паттернов
+            let mut max_pat_width = 0;
+
+            if has_pattern_subcommands {
+                for (sub_name, sub_node) in &node.subcommands {
+                    if sub_name.starts_with('{') && sub_node.has_visible_targets() {
+                        max_pat_width = max_pat_width.max(ansi::visible_width(sub_name));
+                    }
+                }
+            }
+
+            if !pos_pat_str.is_empty() {
+                max_pat_width = max_pat_width.max(ansi::visible_width(&pos_pat_str));
+            }
+
+            // Минимальный гарантированный отступ 4 пробела
+            let target_width = max_pat_width + 4;
+
+            // 2. Вывод паттернов из подкоманд
+            if has_pattern_subcommands {
+                for (sub_name, sub_node) in &node.subcommands {
+                    if !sub_name.starts_with('{') || !sub_node.has_visible_targets() {
+                        continue;
+                    }
+
+                    let formatted = sub_name.as_str().bold().to_string();
+                    let visible_len = ansi::visible_width(sub_name);
+
+                    let doc_summary = if !sub_node.doc.is_empty() {
+                        sub_node.doc.to_string()
+                    } else if !node.doc.is_empty() {
+                        node.doc.to_string()
+                    } else {
+                        String::new()
+                    };
+
+                    if doc_summary.is_empty() {
+                        out.push_str(&format!("  {}\n", formatted));
+                    } else {
+                        let pad = " ".repeat(target_width.saturating_sub(visible_len));
+                        out.push_str(&format!("  {}{}{}\n", formatted, pad, doc_summary));
+                    }
+                }
+            }
+
+            // 3. Вывод позиционного паттерна текущего узла
+            if !pos_pat_str.is_empty()
+                && (!has_pattern_subcommands || !node.subcommands.contains_key(&pos_pat_str))
+            {
+                let formatted = pos_pat_str.as_str().bold().to_string();
+                let visible_len = ansi::visible_width(&pos_pat_str);
+
+                let doc_summary = if !node.doc.is_empty() {
+                    node.doc.to_string()
+                } else {
+                    String::new()
+                };
+
+                if doc_summary.is_empty() {
+                    out.push_str(&format!("  {}\n", formatted));
+                } else {
+                    let pad = " ".repeat(target_width.saturating_sub(visible_len));
+                    out.push_str(&format!("  {}{}{}\n", formatted, pad, doc_summary));
+                }
+            }
+
+            out.push('\n');
+        }
+
+        // options block
         out.push_str(&"Options:\n".bold().underlined().to_string());
 
         let all_flags: Vec<FlagSpec> = node
@@ -496,6 +655,31 @@ impl Commands {
     }
 }
 
+/// Formats positional tokens slice into a single pattern string (e.g., `{skill} {payload..}`).
+fn format_positional_pattern(tokens: &[TokenSpec]) -> String {
+    tokens
+        .iter()
+        .map(|t| match t {
+            TokenSpec::Positional(p) => {
+                if p.is_empty() {
+                    "{}".to_string()
+                } else {
+                    format!("{{{}}}", p)
+                }
+            }
+            TokenSpec::Rest(r) => {
+                if r.is_empty() {
+                    "{..}".to_string()
+                } else {
+                    format!("{{{}..}}", r)
+                }
+            }
+            TokenSpec::Literal(l) => l.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Parses a raw flag token (including combined aliases like `-l|--load|--pull`) into a `FlagSpec`.
 fn parse_single_flag(raw: &str) -> Option<FlagSpec> {
     let (names_part, default_val) = if let Some((left, right)) = raw.split_once('=') {
@@ -564,7 +748,7 @@ fn parse_and_validate_node(
     let mut input_words = Vec::new();
 
     for token in remaining_tokens {
-        if token == "--help" || token == "-h" {
+        if token == "--help" || token == "-h" || token == "help" {
             is_help_requested = true;
         } else {
             input_words.push(token.as_str());
@@ -712,8 +896,6 @@ fn parse_and_validate_node(
 }
 
 /// Converts grouped short flags (for example, `-ab`) into separate tokens (`-a`, `-b`).
-///
-/// If flag takes a value and it is passed end-to-end (for example, `-uRoot`), the remaining part becomes the value (`-u`, `Root`).
 fn expand_short_flags(
     input_words: &[&str],
     flag_lookup: &HashMap<String, (&FlagSpec, bool)>,
@@ -721,7 +903,6 @@ fn expand_short_flags(
     let mut expanded = Vec::new();
 
     for word in input_words {
-        // check: it starts with '-', not '--', not empty after '-', and does not contain '='
         if word.starts_with('-') && !word.starts_with("--") && word.len() > 2 && !word.contains('=')
         {
             let chars: Vec<char> = word[1..].chars().collect();
@@ -740,8 +921,6 @@ fn expand_short_flags(
                         expanded.push(short_flag);
                         i += 1;
                     } else {
-                        // if flag requires/accepts a value, then ALL remaining characters of the chain are
-                        // are considered its value (for example, -uAdmin -> -u Admin)
                         expanded.push(short_flag);
                         let rest_val: String = chars[i + 1..].iter().collect();
                         if !rest_val.is_empty() {
@@ -750,7 +929,6 @@ fn expand_short_flags(
                         break;
                     }
                 } else {
-                    // if symbol is not found in a known clip, throw it as is for the correct output of UnknownFlag
                     expanded.push(short_flag);
                     i += 1;
                 }
