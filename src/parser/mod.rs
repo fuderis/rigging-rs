@@ -156,13 +156,13 @@ impl Commands {
         current.doc = spec.doc;
 
         if !positional_tokens.is_empty() {
-            current.positional_tokens = positional_tokens.clone();
             let pattern_key = format_positional_pattern(&positional_tokens);
             let pattern_node = current
                 .subcommands
                 .entry(pattern_key)
                 .or_insert_with(|| CommandNode::new(""));
             pattern_node.doc = spec.doc;
+            pattern_node.positional_tokens = positional_tokens;
         }
     }
 
@@ -197,19 +197,20 @@ impl Commands {
             }
         }
 
-        current.doc = spec.doc;
-        current.flags = spec.flags;
-        current.handler = Some(handler);
-        current.hidden = hidden;
-        current.positional_tokens = positional_tokens.clone();
-
-        if !positional_tokens.is_empty() {
+        if positional_tokens.is_empty() {
+            current.doc = spec.doc;
+            current.flags = spec.flags;
+            current.handler = Some(handler);
+            current.hidden = hidden;
+        } else {
             let pattern_key = format_positional_pattern(&positional_tokens);
             let pattern_node = current
                 .subcommands
                 .entry(pattern_key)
                 .or_insert_with(|| CommandNode::new(""));
             pattern_node.doc = spec.doc;
+            pattern_node.flags = spec.flags;
+            pattern_node.handler = Some(handler);
             pattern_node.hidden = hidden;
             pattern_node.positional_tokens = positional_tokens;
         }
@@ -255,7 +256,7 @@ impl Commands {
             ));
         }
 
-        // 0. Обработка вызова `help <subcommand>` на верхнем уровне
+        // 0. Handling the 'help <subcommand>` call at the top level
         if args.first().map(|s| s.as_str()) == Some("help") {
             let mut current = &self.root;
             let mut path = vec![self.name.clone()];
@@ -300,6 +301,15 @@ impl Commands {
             }
         }
 
+        // switching to pattern node if there is no direct handler
+        if current.handler.is_none() && idx < args.len() && !args[idx].starts_with('-') {
+            if let Some((_, pat_node)) =
+                current.subcommands.iter().find(|(k, _)| k.starts_with('{'))
+            {
+                current = pat_node;
+            }
+        }
+
         let remaining = &args[idx..];
         let full_path = path.join(" ");
 
@@ -326,7 +336,6 @@ impl Commands {
 
             let res = handler(ctx).await;
 
-            // check ctx.skip() flag
             if let Err(ref err) = res {
                 if matches_downcast!(err, ParseError::Skip) {
                     return self.fallback_or_error(current, &full_path, failed_token, args);
@@ -339,7 +348,6 @@ impl Commands {
         }
     }
 
-    /// Helper method for generate typos/hints in case of missing or missing matches.
     fn fallback_or_error(
         &self,
         current: &CommandNode,
@@ -381,13 +389,12 @@ impl Commands {
         }
     }
 
-    /// Finds the most suitable team based on the Levenshtein distance.
     fn find_similar_command<'a>(&self, node: &'a CommandNode, input: &str) -> Option<&'a str> {
         let mut best_candidate = None;
         let mut min_distance = usize::MAX;
 
         for (name, child) in &node.subcommands {
-            if child.hidden || !child.has_visible_targets() || name.starts_with('{') {
+            if child.hidden || name.starts_with('{') {
                 continue;
             }
 
@@ -428,24 +435,32 @@ impl Commands {
             out.push_str(&format!("{}\n\n", node.doc));
         }
 
-        let has_visible_subcommands = node
+        let has_standard_subcommands = node
             .subcommands
-            .values()
-            .any(|sub| sub.has_visible_targets());
+            .iter()
+            .any(|(name, sub)| !name.starts_with('{') && !sub.hidden);
+
+        let has_pattern_subcommands = node
+            .subcommands
+            .iter()
+            .any(|(name, sub)| name.starts_with('{') && !sub.hidden);
+
+        let has_positionals = !node.positional_tokens.is_empty();
 
         let mut usage = format!("{} {}", "Usage:".bold().underlined(), path.bold());
-        if has_visible_subcommands {
+        if has_standard_subcommands {
             usage.push_str(&" [COMMAND]".dim().to_string());
+        }
+        if has_pattern_subcommands {
+            usage.push_str(&" [PATTERN]".dim().to_string());
+        } else if has_positionals {
+            let pos_pat_str = format_positional_pattern(&node.positional_tokens);
+            usage.push_str(&format!(" {}", pos_pat_str).dim().to_string());
         }
         usage.push_str(&" [OPTIONS]\n\n".dim().to_string());
         out.push_str(&usage);
 
         // commands block
-        let has_standard_subcommands = node
-            .subcommands
-            .iter()
-            .any(|(name, sub)| !name.starts_with('{') && sub.has_visible_targets());
-
         let show_commands_section = has_standard_subcommands || is_root;
 
         if show_commands_section {
@@ -453,14 +468,14 @@ impl Commands {
 
             let mut max_width = if is_root { "help".len() } else { 0 };
             for (sub_name, sub_node) in &node.subcommands {
-                if !sub_name.starts_with('{') && sub_node.has_visible_targets() {
+                if !sub_name.starts_with('{') && !sub_node.hidden {
                     max_width = max_width.max(sub_name.len());
                 }
             }
             let target_width = max_width + 4;
 
             for (sub_name, sub_node) in &node.subcommands {
-                if sub_name.starts_with('{') || !sub_node.has_visible_targets() {
+                if sub_name.starts_with('{') || sub_node.hidden {
                     continue;
                 }
 
@@ -494,12 +509,7 @@ impl Commands {
         }
 
         // patterns block
-        let has_pattern_subcommands = node
-            .subcommands
-            .iter()
-            .any(|(name, sub)| name.starts_with('{') && sub.has_visible_targets());
-
-        let pos_pat_str = if !node.positional_tokens.is_empty() {
+        let pos_pat_str = if has_positionals {
             format_positional_pattern(&node.positional_tokens)
         } else {
             String::new()
@@ -510,12 +520,11 @@ impl Commands {
         if show_patterns_section {
             out.push_str(&"Patterns:\n".bold().underlined().to_string());
 
-            // 1. Считаем максимальную видимую ширину среди всех паттернов
             let mut max_pat_width = 0;
 
             if has_pattern_subcommands {
                 for (sub_name, sub_node) in &node.subcommands {
-                    if sub_name.starts_with('{') && sub_node.has_visible_targets() {
+                    if sub_name.starts_with('{') && !sub_node.hidden {
                         max_pat_width = max_pat_width.max(ansi::visible_width(sub_name));
                     }
                 }
@@ -525,13 +534,11 @@ impl Commands {
                 max_pat_width = max_pat_width.max(ansi::visible_width(&pos_pat_str));
             }
 
-            // Минимальный гарантированный отступ 4 пробела
             let target_width = max_pat_width + 4;
 
-            // 2. Вывод паттернов из подкоманд
             if has_pattern_subcommands {
                 for (sub_name, sub_node) in &node.subcommands {
-                    if !sub_name.starts_with('{') || !sub_node.has_visible_targets() {
+                    if !sub_name.starts_with('{') || sub_node.hidden {
                         continue;
                     }
 
@@ -555,7 +562,6 @@ impl Commands {
                 }
             }
 
-            // 3. Вывод позиционного паттерна текущего узла
             if !pos_pat_str.is_empty()
                 && (!has_pattern_subcommands || !node.subcommands.contains_key(&pos_pat_str))
             {
@@ -587,6 +593,7 @@ impl Commands {
             .iter()
             .chain(self.global_flags.iter())
             .cloned()
+            .filter(|flag| flag.names.iter().any(|n| !n.is_empty()))
             .collect();
 
         let help_flag_str = format_option_flags("h", "help");
@@ -630,7 +637,7 @@ impl Commands {
     }
 
     fn collect_subcommand_leafs(node: &CommandNode, prefix: &str, acc: &mut Vec<String>) {
-        if node.hidden || !node.has_visible_targets() {
+        if node.hidden {
             return;
         }
 
@@ -642,7 +649,7 @@ impl Commands {
         }
 
         for (name, child) in &node.subcommands {
-            if child.hidden || !child.has_visible_targets() {
+            if child.hidden {
                 continue;
             }
             let next_prefix = if prefix.is_empty() {
@@ -680,7 +687,7 @@ fn format_positional_pattern(tokens: &[TokenSpec]) -> String {
         .join(" ")
 }
 
-/// Parses a raw flag token (including combined aliases like `-l|--load|--pull`) into a `FlagSpec`.
+/// Parses a raw flag token into a `FlagSpec`.
 fn parse_single_flag(raw: &str) -> Option<FlagSpec> {
     let (names_part, default_val) = if let Some((left, right)) = raw.split_once('=') {
         (left, Some(right.to_string()))
@@ -895,7 +902,6 @@ fn parse_and_validate_node(
     Ok((ctx, is_help_requested))
 }
 
-/// Converts grouped short flags (for example, `-ab`) into separate tokens (`-a`, `-b`).
 fn expand_short_flags(
     input_words: &[&str],
     flag_lookup: &HashMap<String, (&FlagSpec, bool)>,
