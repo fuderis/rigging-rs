@@ -4,7 +4,12 @@ use crossterm::{
     event::{KeyCode, KeyEvent, KeyModifiers},
     style::{Color, Stylize},
 };
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+const DIGIT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Interactive selection menu.
 pub struct SelectMenu {
@@ -15,6 +20,8 @@ pub struct SelectMenu {
     output: Option<usize>,
     is_finished: bool,
     dirty: bool,
+    digit_buffer: String,
+    last_digit_time: Option<Instant>,
 }
 
 impl SelectMenu {
@@ -29,9 +36,40 @@ impl SelectMenu {
                 output: None,
                 is_finished: false,
                 dirty: true,
+                digit_buffer: String::new(),
+                last_digit_time: None,
             },
             (),
         )
+    }
+
+    /// Вспомогательный метод для обработки ввода цифр
+    fn handle_digit_input(&mut self, digit: char) -> bool {
+        let now = Instant::now();
+
+        // Если прошло больше 500 мс — сбрасываем накопленный буфер
+        if let Some(last_time) = self.last_digit_time {
+            if now.duration_since(last_time) > DIGIT_TIMEOUT {
+                self.digit_buffer.clear();
+            }
+        } else {
+            self.digit_buffer.clear();
+        }
+
+        self.digit_buffer.push(digit);
+        self.last_digit_time = Some(now);
+
+        if let Ok(num) = self.digit_buffer.parse::<usize>() {
+            if num > 0 {
+                let target_idx = num - 1;
+                if target_idx < self.items.len() && self.selected_idx != target_idx {
+                    self.selected_idx = target_idx;
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 }
 
@@ -68,11 +106,7 @@ impl Widget for SelectMenu {
         lines.push(self.prompt.clone());
 
         for (idx, item) in self.items.iter().enumerate() {
-            let num_prefix = if idx < 9 {
-                format!("{}. ", idx + 1)
-            } else {
-                "   ".to_string()
-            };
+            let num_prefix = format!("{}. ", idx + 1);
 
             if idx == self.selected_idx {
                 let line = format!("  > {}{}", num_prefix, item)
@@ -105,6 +139,7 @@ impl Widget for SelectMenu {
 
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
+                self.digit_buffer.clear();
                 if self.selected_idx > 0 {
                     self.selected_idx -= 1;
                 } else {
@@ -113,6 +148,7 @@ impl Widget for SelectMenu {
                 moved = true;
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                self.digit_buffer.clear();
                 if self.selected_idx + 1 < self.items.len() {
                     self.selected_idx += 1;
                 } else {
@@ -120,12 +156,8 @@ impl Widget for SelectMenu {
                 }
                 moved = true;
             }
-            KeyCode::Char(ch @ '1'..='9') => {
-                let digit_idx = (ch as usize) - ('1' as usize);
-                if digit_idx < self.items.len() && self.selected_idx != digit_idx {
-                    self.selected_idx = digit_idx;
-                    moved = true;
-                }
+            KeyCode::Char(ch @ '0'..='9') => {
+                moved = self.handle_digit_input(ch);
             }
             KeyCode::Enter => {
                 self.output = Some(self.selected_idx);
