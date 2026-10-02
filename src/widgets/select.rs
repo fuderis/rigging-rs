@@ -33,9 +33,11 @@ impl SelectMenu {
             (),
         )
     }
+}
 
+impl Block<SelectMenu> {
     pub fn select_color(mut self, color: Color) -> Self {
-        self.selected_color = color;
+        self.inner.selected_color = color;
         self
     }
 }
