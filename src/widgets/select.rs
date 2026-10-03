@@ -43,11 +43,9 @@ impl SelectMenu {
         )
     }
 
-    /// Вспомогательный метод для обработки ввода цифр
     fn handle_digit_input(&mut self, digit: char) -> bool {
         let now = Instant::now();
 
-        // Если прошло больше 500 мс — сбрасываем накопленный буфер
         if let Some(last_time) = self.last_digit_time {
             if now.duration_since(last_time) > DIGIT_TIMEOUT {
                 self.digit_buffer.clear();
@@ -109,13 +107,13 @@ impl Widget for SelectMenu {
             let num_prefix = format!("{}. ", idx + 1);
 
             if idx == self.selected_idx {
-                let line = format!("  > {}{}", num_prefix, item)
+                let line = format!("> {}{}", num_prefix, item)
                     .with(self.selected_color)
                     .bold()
                     .to_string();
                 lines.push(line);
             } else {
-                let line = format!("    {}{}", num_prefix, item);
+                let line = format!("  {}{}", num_prefix, item);
                 lines.push(line);
             }
         }
