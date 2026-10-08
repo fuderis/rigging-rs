@@ -238,6 +238,7 @@ impl Widget for Print {
         let mut idx = 0;
 
         while idx < self.blocks.len() {
+            // Групповая обработка полей Field
             if matches!(self.blocks[idx], PrintBlock::Field { .. }) {
                 let start_idx = idx;
                 let mut max_label_len = 0;
@@ -280,6 +281,52 @@ impl Widget for Print {
                         };
 
                         let indent = " ".repeat(prefix_w);
+                        for (line_idx, l) in wrapped.into_iter().enumerate() {
+                            if line_idx == 0 {
+                                lines.push(format!("{prefix}{l}\x1b[0m"));
+                            } else {
+                                lines.push(format!("{indent}{l}\x1b[0m"));
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Групповая обработка элементов дерева Tree
+            if matches!(self.blocks[idx], PrintBlock::Tree { .. }) {
+                let start_idx = idx;
+                while idx < self.blocks.len() && matches!(self.blocks[idx], PrintBlock::Tree { .. })
+                {
+                    idx += 1;
+                }
+                let end_idx = idx;
+
+                for i in start_idx..end_idx {
+                    let is_last = i == end_idx - 1;
+                    if let PrintBlock::Tree { text, color } = &self.blocks[i] {
+                        let symbol_str = if is_last { "  └─ " } else { "  ├─ " };
+                        let mut symbol = symbol_str.bold();
+                        if let Some(c) = color {
+                            symbol = symbol.with(*c);
+                        }
+                        let prefix = symbol.to_string();
+                        let prefix_w = ansi::visible_width(&prefix);
+
+                        let target_w = max_width.map(|w| w.saturating_sub(prefix_w));
+                        let wrapped = match target_w {
+                            Some(w) if w > 0 => ansi::wrap_terminal_text(text, w),
+                            _ => text.lines().map(String::from).collect(),
+                        };
+
+                        // Вертикальная линия для переноса многострочных текстов
+                        let continuation_symbol = if is_last { "     " } else { "  │  " };
+                        let indent = if let Some(c) = color {
+                            continuation_symbol.bold().with(*c).to_string()
+                        } else {
+                            continuation_symbol.bold().to_string()
+                        };
+
                         for (line_idx, l) in wrapped.into_iter().enumerate() {
                             if line_idx == 0 {
                                 lines.push(format!("{prefix}{l}\x1b[0m"));
@@ -383,30 +430,6 @@ impl Widget for Print {
                     }
                 }
 
-                PrintBlock::Tree { text, color } => {
-                    let mut symbol = "  └─ ".bold();
-                    if let Some(c) = color {
-                        symbol = symbol.with(*c);
-                    }
-                    let prefix = symbol.to_string();
-                    let prefix_w = ansi::visible_width(&prefix);
-                    let target_w = max_width.map(|w| w.saturating_sub(prefix_w));
-
-                    let wrapped = match target_w {
-                        Some(w) if w > 0 => ansi::wrap_terminal_text(text, w),
-                        _ => text.lines().map(String::from).collect(),
-                    };
-
-                    let indent = " ".repeat(prefix_w);
-                    for (i, l) in wrapped.into_iter().enumerate() {
-                        if i == 0 {
-                            lines.push(format!("{prefix}{l}\x1b[0m"));
-                        } else {
-                            lines.push(format!("{indent}{l}\x1b[0m"));
-                        }
-                    }
-                }
-
                 PrintBlock::Line { color } => {
                     let width = max_width.unwrap_or(80);
                     let raw_line = "─".repeat(width);
@@ -420,7 +443,7 @@ impl Widget for Print {
                     lines.push(format!("{styled_line}\x1b[0m"));
                 }
 
-                PrintBlock::Field { .. } => unreachable!(),
+                PrintBlock::Field { .. } | PrintBlock::Tree { .. } => unreachable!(),
             }
 
             idx += 1;
