@@ -26,6 +26,13 @@ pub enum Confirmation {
     Always,
 }
 
+impl Confirmation {
+    /// Returns true if confirmed (Yes|Alsways).
+    pub fn confirmed(&self) -> bool {
+        matches!(self, Self::Yes | Self::Always)
+    }
+}
+
 /// Confirmation prompt widget.
 pub struct ConfirmPrompt {
     prompt: String,
