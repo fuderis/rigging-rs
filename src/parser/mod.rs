@@ -3,6 +3,9 @@
 //! Provides a prefix-tree (trie) based command dispatcher supporting nested subcommands,
 //! positional arguments, optional/required flags with explicit aliases, auto-generated help messages, and hidden commands.
 
+pub mod error;
+pub use error::Error as ParseError;
+
 pub mod context;
 pub use context::Context;
 
@@ -26,12 +29,12 @@ use strsim::levenshtein;
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Type alias for standard asynchronous command handlers.
-pub type HandlerFn = Box<dyn Fn(Context) -> BoxFuture<'static, Result<()>> + Send + Sync>;
+pub type HandlerFn = Box<dyn Fn(Context) -> BoxFuture<'static, Result<(), DynError>> + Send + Sync>;
 
 /// Represents the final internal resolution of command execution.
 enum DispatchOutput {
     /// Handler finished execution returning a standard result.
-    Executed(Result<()>),
+    Executed(Result<(), DynError>),
     /// Help message string generated for display.
     Help(String),
     /// Version message string generated for display.
@@ -105,7 +108,7 @@ impl Commands {
     pub fn cmd<F, Fut>(mut self, pattern: &'static str, doc: &'static str, handler: F) -> Self
     where
         F: Fn(Context) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<()>> + Send + 'static,
+        Fut: Future<Output = Result<(), DynError>> + Send + 'static,
     {
         let spec = parse_pattern(pattern, doc);
         self.insert_route(spec, Box::new(move |ctx| Box::pin(handler(ctx))), false);
@@ -118,7 +121,7 @@ impl Commands {
     pub fn hide_cmd<F, Fut>(mut self, pattern: &'static str, doc: &'static str, handler: F) -> Self
     where
         F: Fn(Context) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<()>> + Send + 'static,
+        Fut: Future<Output = Result<(), DynError>> + Send + 'static,
     {
         let spec = parse_pattern(pattern, doc);
         self.insert_route(spec, Box::new(move |ctx| Box::pin(handler(ctx))), true);
@@ -219,7 +222,7 @@ impl Commands {
     /// Main entrance point for executing CLI commands from process environment arguments.
     ///
     /// Returns `Ok(())` on successful execution or help/version display, and exits process on error.
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(self) -> Result<(), DynError> {
         let args: Vec<String> = std::env::args().skip(1).collect();
 
         match self.dispatch(&args).await {
@@ -240,7 +243,7 @@ impl Commands {
     }
 
     /// Progressively dispatches CLI arguments against the command tree.
-    async fn dispatch(&self, args: &[String]) -> StdResult<DispatchOutput, ParseError> {
+    async fn dispatch(&self, args: &[String]) -> Result<DispatchOutput, Error> {
         if args.first().map(|s| s.as_str()) == Some("-V")
             || args.first().map(|s| s.as_str()) == Some("--version")
         {
@@ -354,7 +357,7 @@ impl Commands {
         full_path: &str,
         failed_token: Option<&str>,
         args: &[String],
-    ) -> StdResult<DispatchOutput, ParseError> {
+    ) -> Result<DispatchOutput, Error> {
         if failed_token.is_some() || !current.subcommands.is_empty() {
             if let Some(typo) = failed_token {
                 let best_match = self.find_similar_command(current, typo);
@@ -378,14 +381,15 @@ impl Commands {
                 Err(ParseError::ErrorWithHelp(
                     Box::new(ParseError::UnknownCommand(typo.to_string())),
                     help_hint,
-                ))
+                )
+                .into())
             } else {
                 Ok(DispatchOutput::Help(
                     self.generate_node_help(current, full_path),
                 ))
             }
         } else {
-            Err(ParseError::UnknownCommand(args.join(" ")))
+            Err(ParseError::UnknownCommand(args.join(" ")).into())
         }
     }
 
@@ -750,7 +754,7 @@ fn parse_and_validate_node(
     node: &CommandNode,
     global_flags: &[FlagSpec],
     remaining_tokens: &[String],
-) -> StdResult<(Context, bool), ParseError> {
+) -> Result<(Context, bool), Error> {
     let mut is_help_requested = false;
     let mut input_words = Vec::new();
 
@@ -832,11 +836,11 @@ fn parse_and_validate_node(
                         input_flags.insert(canonical, parsed_words[i + 1].to_string());
                         i += 1;
                     } else if matches!(flag_spec.kind, FlagKind::Required) {
-                        return Err(ParseError::MissingRequiredFlag(canonical));
+                        return Err(ParseError::MissingRequiredFlag(canonical).into());
                     }
                 }
             } else {
-                return Err(ParseError::UnknownFlag(word.to_string()));
+                return Err(ParseError::UnknownFlag(word.to_string()).into());
             }
         } else {
             clean_words.push(word);
@@ -852,7 +856,7 @@ fn parse_and_validate_node(
             TokenSpec::Positional(name) => {
                 if word_idx >= clean_words.len() {
                     if !is_help_requested {
-                        return Err(ParseError::MissingPositional(name.clone()));
+                        return Err(ParseError::MissingPositional(name.clone()).into());
                     }
                 } else {
                     ctx.args
@@ -876,9 +880,7 @@ fn parse_and_validate_node(
     }
 
     if word_idx < clean_words.len() && !is_help_requested {
-        return Err(ParseError::UnexpectedArgument(
-            clean_words[word_idx].to_string(),
-        ));
+        return Err(ParseError::UnexpectedArgument(clean_words[word_idx].to_string()).into());
     }
 
     for flag_spec in &all_flags {
@@ -892,7 +894,7 @@ fn parse_and_validate_node(
                 }
                 FlagKind::Required => {
                     if !is_help_requested {
-                        return Err(ParseError::MissingRequiredFlag(canonical.to_string()));
+                        return Err(ParseError::MissingRequiredFlag(canonical.to_string()).into());
                     }
                 }
             }

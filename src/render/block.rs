@@ -4,11 +4,12 @@ use super::{
     widget::Widget,
 };
 use crate::{
+    prelude::*,
     style::{Align, BorderStyle, Margin, Padding, Title},
     utils::ansi,
 };
 
-use atoman::State;
+use atoman::{State, sync::mpsc, time::interval};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -22,8 +23,6 @@ use std::{
     io::{self, BufWriter, Write},
     time::Duration,
 };
-use tokio::sync::mpsc;
-use tokio::time::interval;
 
 /// Cache for horizontal borders.
 #[derive(Default)]
@@ -151,7 +150,7 @@ impl<W: Widget> Block<W> {
         let cmd_tx = self.cmd_tx.clone();
         let event_tx = self.event_tx.clone();
 
-        tokio::spawn(async move {
+        atoman::spawn(async move {
             let guard = state_clone.lock().await;
             let ctx = Context {
                 state: guard,
@@ -805,7 +804,7 @@ impl<W: Widget> Block<W> {
         writer: &mut Writer,
         prev_height: usize,
         target_height: usize,
-    ) -> io::Result<()> {
+    ) -> Result<(), Error> {
         if target_height > prev_height {
             let needed = target_height - prev_height;
 
@@ -839,7 +838,7 @@ impl<W: Widget> Block<W> {
     pub(crate) fn clear_previous_frame<Writer: Write>(
         writer: &mut Writer,
         prev_height: usize,
-    ) -> io::Result<()> {
+    ) -> Result<(), Error> {
         if prev_height == 0 {
             return Ok(());
         }
@@ -856,13 +855,13 @@ impl<W: Widget> Block<W> {
             queue!(writer, cursor::MoveUp((prev_height - 1) as u16))?;
         }
         queue!(writer, cursor::MoveToColumn(0))?;
-        writer.flush()
+        writer.flush().map_err(Error::from)
     }
 
     pub(crate) fn print_lines_dynamic<Writer: Write>(
         writer: &mut Writer,
         lines: &[String],
-    ) -> io::Result<()> {
+    ) -> Result<(), Error> {
         if lines.is_empty() {
             return Ok(());
         }
@@ -885,13 +884,13 @@ impl<W: Widget> Block<W> {
         }
         queue!(writer, cursor::MoveToColumn(0))?;
 
-        writer.flush()
+        writer.flush().map_err(Error::from)
     }
 
     pub(crate) fn print_lines_final<Writer: Write>(
         writer: &mut Writer,
         lines: &[String],
-    ) -> io::Result<()> {
+    ) -> Result<(), Error> {
         if lines.is_empty() {
             return Ok(());
         }
@@ -910,7 +909,7 @@ impl<W: Widget> Block<W> {
         }
 
         queue!(writer, crossterm::style::Print("\r\n"))?;
-        writer.flush()
+        writer.flush().map_err(Error::from)
     }
 
     // --- Main Rendering Cycle ---
@@ -920,12 +919,12 @@ impl<W: Widget> Block<W> {
         self,
         stdout: &mut io::BufWriter<io::Stdout>,
         _prev_height: usize,
-    ) -> io::Result<(W::Output, Vec<String>)> {
+    ) -> Result<(W::Output, Vec<String>), Error> {
         self.render_with_writer(stdout).await
     }
 
     /// Entry point for launching widget rendering.
-    pub async fn render(self) -> io::Result<W::Output> {
+    pub async fn render(self) -> Result<W::Output, Error> {
         let mut stdout = BufWriter::with_capacity(1024, io::stdout());
         let (output, _) = self.render_with_writer(&mut stdout).await?;
         Ok(output)
@@ -934,7 +933,7 @@ impl<W: Widget> Block<W> {
     pub async fn render_with_writer(
         mut self,
         mut stdout: &mut io::BufWriter<io::Stdout>,
-    ) -> io::Result<(W::Output, Vec<String>)> {
+    ) -> Result<(W::Output, Vec<String>), Error> {
         let _terminal_guard = TerminalGuard::new(true);
 
         let mut prev_height = 0;
@@ -1131,13 +1130,13 @@ impl<W: Widget> Block<W> {
                 };
 
                 render_blink_phase(&mut self, mid_color);
-                tokio::time::sleep(p1).await;
+                atoman::time::sleep(p1).await;
 
                 render_blink_phase(&mut self, blink_col);
-                tokio::time::sleep(p2).await;
+                atoman::time::sleep(p2).await;
 
                 render_blink_phase(&mut self, mid_color);
-                tokio::time::sleep(p3).await;
+                atoman::time::sleep(p3).await;
 
                 self.bg_color = Some(original_bg);
                 self.invalidate_border_cache();

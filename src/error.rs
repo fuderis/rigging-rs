@@ -1,27 +1,9 @@
-use crate::prelude::DynError;
-use macron::{Display, Error};
+use macron::{Display, Error, From};
 
-/// The argument parsing error
-#[derive(Debug, Error, Display)]
-pub enum ParseError {
-    #[display(fmt = "{0}\n\n{1}")]
-    ErrorWithHelp(#[source] DynError, String),
+#[derive(Debug, Error, Display, From)]
+pub enum Error {
+    Io(std::io::Error),
 
-    #[display(fmt = "Unrecognized command '{0}'.")]
-    UnknownCommand(String),
-
-    #[display(fmt = "The required flag '--{0}' is missing.")]
-    MissingRequiredFlag(String),
-
-    #[display(fmt = "The required argument '<{0}>' is missing.")]
-    MissingPositional(String),
-
-    #[display(fmt = "Unexpected argument '{0}'.")]
-    UnexpectedArgument(String),
-
-    #[display(fmt = "Unknown flag '{0}'.")]
-    UnknownFlag(String),
-
-    #[display(fmt = "Handler skipped execution")]
-    Skip,
+    #[cfg(feature = "parser")]
+    Parser(crate::parser::error::Error),
 }

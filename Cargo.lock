@@ -67,14 +67,14 @@ dependencies = [
 
 [[package]]
 name = "atoman"
-version = "0.11.8"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e93c3dbd203d23c34c3ed4a205f7c8b0e17ecdaa9303083f1cb01d91e6bfc9f"
+checksum = "f6539c4a62f5a8ad32e7511817d622d4c053acfd812d17abf5ae5fbae6c2db24"
 dependencies = [
  "ahash",
  "arc-swap",
  "atoman-macros",
- "macron",
+ "macron 0.6.1",
  "once_cell",
  "tokio",
 ]
@@ -153,40 +153,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "acdd7c62a3665c7f6830a51635d9ac9b23ed385797f70a83bb8bafe9c572ab2b"
 dependencies = [
  "winapi",
-]
-
-[[package]]
-name = "darling"
-version = "0.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
-dependencies = [
- "darling_core",
- "darling_macro",
-]
-
-[[package]]
-name = "darling_core"
-version = "0.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9865a50f7c335f53564bb694ef660825eb8610e0a53d3e11bf1b0d3df31e03b0"
-dependencies = [
- "ident_case",
- "proc-macro2",
- "quote",
- "strsim",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "darling_macro"
-version = "0.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
-dependencies = [
- "darling_core",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -273,12 +239,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "ident_case"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
-
-[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -329,27 +289,38 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "macron"
-version = "0.5.2"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34ef732b61f40f1389705c10933930f022e9209760d5c06338407973ee8eca9c"
+checksum = "9297cfc53bd7d4ac0d1f6c5304ba0d078fe6dc2d563839cf547aa741e2473fa4"
 dependencies = [
  "async-recursion",
  "async-trait",
  "macron-impl-display",
  "macron-impl-error",
- "macron-impl-from",
- "macron-impl-into",
+ "macron-impl-from 0.2.0",
+ "macron-impl-into 0.2.0",
  "macron-regex",
  "macron-str",
 ]
 
 [[package]]
-name = "macron-impl-display"
-version = "0.3.0"
+name = "macron"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ac0015290b7db6fa4b909bc07c1508c01e27271a6355c727cb7de16376a9288"
+checksum = "c0dba62b950e879f7822ef8444c36393b58eae54324a0902a57c16ca7ec1cc44"
 dependencies = [
- "darling",
+ "macron-impl-display",
+ "macron-impl-error",
+ "macron-impl-from 0.3.0",
+ "macron-impl-into 0.3.0",
+]
+
+[[package]]
+name = "macron-impl-display"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "393e9f27a7e855d825d71da316fdd38d898f9264f134686e2ddd08e6af011009"
+dependencies = [
  "heck",
  "proc-macro2",
  "quote",
@@ -378,10 +349,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "macron-impl-from"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b48d26d1feeffa8ddfc70b8b3e7935f58e81ca46c1391d5e96f95a88d0f760d9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "macron-impl-into"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a69eb2137392517dc5f4d2602a3e6a7ab87d129ecfebe2b24af91a20c57406d9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "macron-impl-into"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da4d20bfe1270d1b55fd56e4ebee0f558e34f98697348b3157ca6fb2450b2f1f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -531,19 +524,18 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rigging"
-version = "0.5.13"
+version = "0.6.0"
 dependencies = [
  "adot-tree-sitter-toml",
  "async-trait",
  "atoman",
  "crossterm",
  "heck",
- "macron",
+ "macron 0.7.0",
  "markdown",
  "serde",
  "strip-ansi-escapes",
  "strsim",
- "tokio",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-go",

@@ -1,4 +1,6 @@
+use super::ParseError;
 use crate::prelude::*;
+
 use std::str::FromStr;
 
 /// Execution context passed to command handlers.
@@ -13,7 +15,7 @@ pub struct Context {
 impl Context {
     /// Signals to router that the current handler refuses to process the request.
     /// Parser will intercept this error and continue the standard fallback (search for similar commands / help).
-    pub fn skip<T>(&self) -> Result<T> {
+    pub fn skip<T>(&self) -> Result<T, Error> {
         Err(ParseError::Skip.into())
     }
 
@@ -31,21 +33,26 @@ impl Context {
     /// ```ignore
     /// let port: u16 = ctx.get("port")?;
     /// ```
-    pub fn get<T: FromStr>(&self, key: &str) -> Result<T>
+    pub fn get<T: FromStr>(&self, key: &str) -> Result<T, Error>
     where
         T::Err: std::error::Error + Send + Sync + 'static,
     {
         let raw = self
             .args
             .get(key)
-            .ok_or_else(|| format!("Argument '{}' not found", key))?;
+            .ok_or_else(|| ParseError::UnexpectedArgument(key.to_owned()))?;
 
         if raw.is_empty() {
-            return Err(format!("Argument '{}' is empty", key).into());
+            return Err(ParseError::EmptyArgument(key.to_owned()).into());
         }
 
-        raw.parse::<T>()
-            .map_err(|e| format!("Failed to parse argument '{}': {}", key, e).into())
+        raw.parse::<T>().map_err(|e| {
+            ParseError::InvalidArgument {
+                key: key.to_owned(),
+                source: Box::new(e),
+            }
+            .into()
+        })
     }
 
     /// Retrieves an optional argument and parses it into `Option<T>`.
@@ -63,17 +70,20 @@ impl Context {
     /// ```ignore
     /// let uid: Option<u32> = ctx.get_opt("uid")?;
     /// ```
-    pub fn get_opt<T: FromStr>(&self, key: &str) -> Result<Option<T>>
+    pub fn get_opt<T: FromStr>(&self, key: &str) -> Result<Option<T>, Error>
     where
         T::Err: std::error::Error + Send + Sync + 'static,
     {
         match self.args.get(key) {
             None => Ok(None),
             Some(raw) if raw.is_empty() => Ok(None),
-            Some(raw) => raw
-                .parse::<T>()
-                .map(Some)
-                .map_err(|e| format!("Failed to parse optional argument '{}': {}", key, e).into()),
+            Some(raw) => raw.parse::<T>().map(Some).map_err(|e| {
+                ParseError::InvalidArgument {
+                    key: key.to_owned(),
+                    source: Box::new(e),
+                }
+                .into()
+            }),
         }
     }
 

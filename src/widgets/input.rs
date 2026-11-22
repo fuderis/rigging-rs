@@ -8,13 +8,10 @@ use std::{
 };
 use unicode_width::UnicodeWidthStr;
 
-#[cfg(feature = "buffer")]
+use atoman::sync::Mutex;
 use std::{collections::HashMap, sync::LazyLock};
-#[cfg(feature = "buffer")]
-use tokio::sync::Mutex;
 
 /// Global storage for command histories separated by buffer ID (`u64`).
-#[cfg(feature = "buffer")]
 static COMMAND_HISTORIES: LazyLock<Mutex<HashMap<u64, Vec<Arc<String>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -48,16 +45,12 @@ pub struct Input {
     is_changed: bool,
 
     /// ID of the history buffer being used (`None` disables history).
-    #[cfg(feature = "buffer")]
     buffer_id: Option<u64>,
     /// Maximum limit of saved commands in history.
-    #[cfg(feature = "buffer")]
     buffer_limit: Option<usize>,
     /// Current index within the navigated command history.
-    #[cfg(feature = "buffer")]
     history_idx: Option<usize>,
     /// Draft of user input stored before navigating through history.
-    #[cfg(feature = "buffer")]
     saved_draft: String,
 }
 
@@ -76,13 +69,9 @@ impl Input {
             v_scroll: AtomicUsize::new(0),
             finished: false,
             is_changed: true,
-            #[cfg(feature = "buffer")]
             buffer_id: None,
-            #[cfg(feature = "buffer")]
             buffer_limit: None,
-            #[cfg(feature = "buffer")]
             history_idx: None,
-            #[cfg(feature = "buffer")]
             saved_draft: String::new(),
         };
 
@@ -90,14 +79,12 @@ impl Input {
     }
 
     /// Clears the history buffer associated with the specified `id`.
-    #[cfg(feature = "buffer")]
     pub async fn remove_buffer(id: u64) {
         let mut histories = COMMAND_HISTORIES.lock().await;
         histories.remove(&id);
     }
 
     /// Saves current input to history if `buffer_id` is specified and text is non-empty.
-    #[cfg(feature = "buffer")]
     fn save_to_history(&self) {
         let buffer_id = match self.buffer_id {
             Some(id) => id,
@@ -109,7 +96,7 @@ impl Input {
 
         if !trimmed.is_empty() {
             let limit = self.buffer_limit;
-            tokio::spawn(async move {
+            atoman::spawn(async move {
                 let mut histories = COMMAND_HISTORIES.lock().await;
                 let history = histories.entry(buffer_id).or_default();
 
@@ -242,7 +229,6 @@ impl Widget for Input {
         };
 
         if should_submit {
-            #[cfg(feature = "buffer")]
             self.save_to_history();
             self.finished = true;
             self.is_changed = true;
@@ -297,7 +283,6 @@ impl Widget for Input {
         self.is_changed = true;
 
         // --- process history navigation ---
-        #[cfg(feature = "buffer")]
         if let Some(buffer_id) = self.buffer_id {
             if is_up || is_down {
                 let can_navigate = if self.multiline {
@@ -354,7 +339,6 @@ impl Widget for Input {
         }
 
         // manual editing resets history navigation mode
-        #[cfg(feature = "buffer")]
         if is_backspace || is_delete || is_delete_word || matches!(code, KeyCode::Char(_)) {
             self.history_idx = None;
         }
@@ -548,7 +532,6 @@ impl Block<Input> {
     }
 
     /// Enables history buffer for the input using the provided `id` and optional entry limit.
-    #[cfg(feature = "buffer")]
     pub fn use_buffer(mut self, id: u64, limit: Option<usize>) -> Self {
         self.inner.buffer_id = Some(id);
         self.inner.buffer_limit = limit;

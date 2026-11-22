@@ -1,12 +1,13 @@
 use super::*;
+use crate::prelude::*;
 
+use atoman::sync::{mpsc, oneshot};
 use std::{
     any::Any,
     io,
     ops::{Deref, DerefMut},
     pin::Pin,
 };
-use tokio::sync::{mpsc, oneshot};
 
 /// Defines visual stacking order for nested child widgets relative to the parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +33,7 @@ pub enum Command {
                 ) -> Pin<
                     Box<
                         dyn std::future::Future<
-                                Output = io::Result<(Box<dyn Any + Send>, Vec<String>)>,
+                                Output = Result<(Box<dyn Any + Send>, Vec<String>), Error>,
                             > + Send
                             + 'a,
                     >,
@@ -96,7 +97,7 @@ impl<T: Clone + Send + Sync + 'static, E: Send + 'static> Context<T, E> {
         sub_block: Block<SubW>,
         position: SubWidgetPosition,
         keep_rendered: bool,
-    ) -> io::Result<SubW::Output>
+    ) -> Result<SubW::Output, Error>
     where
         SubW: Widget + Send + 'static,
         SubW::Output: Send + 'static,
@@ -118,7 +119,7 @@ impl<T: Clone + Send + Sync + 'static, E: Send + 'static> Context<T, E> {
         &self,
         sub_block: Block<SubW>,
         position: SubWidgetPosition,
-    ) -> io::Result<SubW::Output>
+    ) -> Result<SubW::Output, Error>
     where
         SubW: Widget + Send + 'static,
         SubW::Output: Send + 'static,
@@ -139,7 +140,7 @@ impl<T: Clone + Send + Sync + 'static, E: Send + 'static> Context<T, E> {
         position: SubWidgetPosition,
         keep_rendered: bool,
         runner: F,
-    ) -> io::Result<R>
+    ) -> Result<R, Error>
     where
         R: Any + Send + 'static,
         F: for<'a> FnOnce(
@@ -147,8 +148,9 @@ impl<T: Clone + Send + Sync + 'static, E: Send + 'static> Context<T, E> {
                 usize,
             ) -> Pin<
                 Box<
-                    dyn std::future::Future<Output = io::Result<(Box<dyn Any + Send>, Vec<String>)>>
-                        + Send
+                    dyn std::future::Future<
+                            Output = Result<(Box<dyn Any + Send>, Vec<String>), Error>,
+                        > + Send
                         + 'a,
                 >,
             > + Send
@@ -177,6 +179,7 @@ impl<T: Clone + Send + Sync + 'static, E: Send + 'static> Context<T, E> {
                 io::ErrorKind::InvalidData,
                 "SubWidget returned an unexpected type during downcast",
             )
+            .into()
         })
     }
 }
