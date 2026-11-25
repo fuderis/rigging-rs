@@ -4,6 +4,9 @@ mod prelude;
 
 pub mod utils;
 
+pub mod state;
+pub use state::State;
+
 #[cfg(feature = "parser")]
 pub mod parser;
 #[cfg(feature = "parser")]

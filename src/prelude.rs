@@ -1,5 +1,8 @@
 #![allow(unused_imports, dead_code)]
-pub use crate::error::Error;
+pub use crate::{
+    error::Error,
+    state::{State, StateGuard},
+};
 
 pub type DynError = Box<dyn std::error::Error + Send + Sync + 'static>;
 

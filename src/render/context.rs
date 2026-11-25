@@ -1,13 +1,13 @@
 use super::*;
 use crate::prelude::*;
 
-use atoman::sync::{mpsc, oneshot};
 use std::{
     any::Any,
     io,
     ops::{Deref, DerefMut},
     pin::Pin,
 };
+use tokio::sync::{mpsc, oneshot};
 
 /// Defines visual stacking order for nested child widgets relative to the parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +47,7 @@ pub enum Command {
 }
 
 pub struct Context<T: Clone + Send + Sync + 'static, E: Send + 'static> {
-    pub state: atoman::StateGuard<T>,
+    pub state: StateGuard<T>,
     pub tx: mpsc::UnboundedSender<Command>,
     pub event_tx: mpsc::UnboundedSender<E>,
 }
@@ -55,10 +55,6 @@ pub struct Context<T: Clone + Send + Sync + 'static, E: Send + 'static> {
 impl<T: Clone + Send + Sync + 'static, E: Send + 'static> Context<T, E> {
     pub fn sync(&mut self) {
         self.state.sync();
-    }
-
-    pub fn sync_n(&mut self, n: usize) {
-        self.state.sync_n(n);
     }
 
     pub fn notify(&mut self) {
@@ -185,7 +181,7 @@ impl<T: Clone + Send + Sync + 'static, E: Send + 'static> Context<T, E> {
 }
 
 impl<T: Clone + Send + Sync + 'static, E: Send + 'static> Deref for Context<T, E> {
-    type Target = atoman::StateGuard<T>;
+    type Target = StateGuard<T>;
 
     fn deref(&self) -> &Self::Target {
         &self.state

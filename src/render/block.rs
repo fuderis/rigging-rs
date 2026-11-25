@@ -5,11 +5,11 @@ use super::{
 };
 use crate::{
     prelude::*,
+    state::{State, StateGuard},
     style::{Align, BorderStyle, Margin, Padding, Title},
     utils::ansi,
 };
 
-use atoman::{State, sync::mpsc, time::interval};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -23,6 +23,10 @@ use std::{
     io::{self, BufWriter, Write},
     time::Duration,
 };
+use tokio::{
+    sync::mpsc,
+    time::{self, interval},
+};
 
 /// Cache for horizontal borders.
 #[derive(Default)]
@@ -35,8 +39,10 @@ struct CachedBorder {
 pub struct Block<W: Widget> {
     /// Inner widget.
     pub inner: W,
-    /// Widget state (controlled by user handler).
-    pub state: atoman::State<W::State>,
+    /// Widget state controlled by renderer.
+    pub state: State<W::State>,
+    /// Mutable working state guard passed to the user handler.
+    guard: Option<StateGuard<W::State>>,
     /// Set to true if widget has handler.
     pub has_handler: bool,
 
@@ -84,13 +90,14 @@ pub struct Block<W: Widget> {
 impl<W: Widget> Block<W> {
     /// Creates new `Block` with specified widget and initial state.
     pub fn new(inner: W, initial_state: W::State) -> Self {
-        let state = State::from(initial_state);
+        let (state, guard) = State::new(initial_state);
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
         Self {
             inner,
             state,
+            guard: Some(guard),
             has_handler: false,
 
             cmd_tx,
@@ -146,12 +153,14 @@ impl<W: Widget> Block<W> {
         }
         self.has_handler = true;
 
-        let state_clone = self.state.clone();
+        let guard = self
+            .guard
+            .take()
+            .expect("StateGuard must be present when registering handler");
         let cmd_tx = self.cmd_tx.clone();
         let event_tx = self.event_tx.clone();
 
-        atoman::spawn(async move {
-            let guard = state_clone.lock().await;
+        tokio::spawn(async move {
             let ctx = Context {
                 state: guard,
                 tx: cmd_tx,
@@ -1130,13 +1139,13 @@ impl<W: Widget> Block<W> {
                 };
 
                 render_blink_phase(&mut self, mid_color);
-                atoman::time::sleep(p1).await;
+                time::sleep(p1).await;
 
                 render_blink_phase(&mut self, blink_col);
-                atoman::time::sleep(p2).await;
+                time::sleep(p2).await;
 
                 render_blink_phase(&mut self, mid_color);
-                atoman::time::sleep(p3).await;
+                time::sleep(p3).await;
 
                 self.bg_color = Some(original_bg);
                 self.invalidate_border_cache();

@@ -8,8 +8,8 @@ use std::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use atoman::sync::Mutex;
 use std::{collections::HashMap, sync::LazyLock};
+use tokio::sync::Mutex;
 
 /// Global storage for command histories separated by buffer ID (`u64`).
 static COMMAND_HISTORIES: LazyLock<Mutex<HashMap<u64, Vec<Arc<String>>>>> =
@@ -96,7 +96,7 @@ impl Input {
 
         if !trimmed.is_empty() {
             let limit = self.buffer_limit;
-            atoman::spawn(async move {
+            tokio::spawn(async move {
                 let mut histories = COMMAND_HISTORIES.lock().await;
                 let history = histories.entry(buffer_id).or_default();
 
